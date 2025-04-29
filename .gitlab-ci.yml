@@ -1,0 +1,68 @@
+# Use the acc-py-devtools templates found at
+# https://gitlab.cern.ch/acc-co/devops/python/acc-py-gitlab-ci-templates/-/blob/master/v2/python.gitlab-ci.yml
+
+include:
+- project: acc-co/devops/python/acc-py-gitlab-ci-templates
+  file: v2/python.gitlab-ci.yml
+
+variables:
+  project_name: sa-preisach
+  PY_VERSION: '3.11'
+  ACC_PY_BASE_IMAGE_TAG: '2023.06'
+
+# ========================= Build =========================
+
+build_sdist:
+  extends: .acc_py_build_sdist
+
+
+build_wheel:
+  extends: .acc_py_build_wheel
+
+
+# A development installation of the package tested with pytest.
+test_dev:
+  extends: .acc_py_dev_test
+  script:
+    # Run the unit-tests with coverage output.
+  - cd ${project_root}
+  - python -m pytest ./tests --cov=${project_name} --cov-report term --cov-report
+    html:coverage-html --cov-report xml:coverage-report.xml --junitxml=junit-report.xml
+
+
+test_wheel:
+  extends:
+  - .acc_py_wheel_test
+  needs:
+  - build_wheel
+  script:
+  - mkdir -p ~/not-the-source-dir && cp -r ${project_root}/tests ~/not-the-source-dir
+    && cd ~/not-the-source-dir
+  - python -m pytest ./tests
+
+
+._build_docs:
+  variables:
+    SPHINX_BUILD_ADDOPTS: -W --keep-going    # Error if we have warnings in the doc build.
+  needs:
+  - build_wheel
+
+
+build_docs:
+  extends:
+  - ._build_docs
+  - .acc_py_build_docs
+
+
+build_docs_on_tag:
+  extends:
+  - ._build_docs
+  - .acc_py_build_docs_on_tag
+
+
+pre-commit:
+  extends: .acc_py_pre-commit
+
+
+release_dist:
+  extends: .acc_py_publish
