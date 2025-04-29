@@ -1,0 +1,44 @@
+trainer:
+  accelerator: cpu
+  max_epochs: 1000
+  min_epochs: 500
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 1
+  devices: 1
+  enable_checkpointing: false
+  # val_check_interval: 1.0
+  #logger:
+  #  class_path: lightning.pytorch.loggers.neptune.NeptuneLogger
+  #  init_args:
+  #    api_key: API_KEY,
+  #    project: hysteresis/Preisach-NN
+  #    prefix: ""
+        # proxies={"http": "http://cs-513-ml001:8080", "https": "http://cs-513-ml001:8080"}
+  callbacks:
+    - class_path: sa_preisach.callbacks.PlotHysteresisCallback
+      init_args:
+        validate_every_n_epochs: 10
+
+data:
+  known_covariates: I_ref_A
+  target_covariate: B_meas_T_filtered
+  train_df_paths: sample_train.parquet
+  val_df_paths: sample_val.parquet
+  downsample: 50
+  target_depends_on: ${data.known_covariates}
+  extra_transforms:
+    B_meas_T_filtered:
+      - class_path: transformertf.data.transform.DiscreteFunctionTransform
+        init_args:
+          xs_: calibration_fn.csv
+
+model:
+  mesh_size: 0.01
+  hidden_dim: [32, 32, 32]
+  temp: 1e-2
+  lr: 1e-2
+  lr_scale: 1e-3
+  lr_sa: 1e-1
+  gradient_clip: 1.0
+  dist_threshold: 1e-3
+  compile_model: false
