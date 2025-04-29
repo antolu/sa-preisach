@@ -3,6 +3,10 @@ dependencies = [
   "matplotlib >= 3.6",
   "numpy >= 1.26, < 2.0",
   "pandas >= 2.0, < 3.0",
+  "torch >= 2.5.1, < 3.0",
+  "transformertf >= 0.9.3",
+  "lightning >= 2.2.2, < 3.0",
+  "pygmsh >= 7.0.0",
 ]
 name = "sa-preisach"
 dynamic = ["version", "readme"]
@@ -60,6 +64,7 @@ sa_preisach = ["py.typed"]
 
 [project.scripts]
 # project endpoints here
+sa_preisach = "sa_preisach.main:main"
 
 # include black configuration for easy to use with VSCode and PyCharm
 # autoformatter
