@@ -71,6 +71,7 @@ class DifferentiablePreisachModel(torch.nn.Module):
 
         # Initialize the Preisach model
         density = torch.zeros(len(self.mesh), dtype=torch.float32)
+        torch.nn.init.uniform(density)
 
         self.density = GPyConstrainedParameter(
             density,
@@ -190,9 +191,10 @@ class DifferentiablePreisach(BaseModule):
         self,
         *,
         mesh_scale: float,
+        temp: float = 1e-3,
         m_scale_bounds: tuple[float, float] = (0.0, 10.0),
         offset_bounds: tuple[float, float] = (-10.0, 10.0),
-        h_slope_bounds: tuple[float, float] = (10.0, 10.0),
+        h_slope_bounds: tuple[float, float] = (-10.0, 10.0),
         use_normalized_density: bool = True,
         mesh_density_function: typing.Literal[
             "constant", "exponential", "default"
@@ -204,6 +206,7 @@ class DifferentiablePreisach(BaseModule):
         use_step_lr: bool = False,
         lr_step_size: int = 100,
         lr_gamma: float = 0.95,
+        compile_model: bool = False,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
@@ -263,14 +266,15 @@ class DifferentiablePreisach(BaseModule):
             return_states=return_states,
         )
 
-    def on_fit_start(self) -> None:
-        super().on_fit_start()
+    def on_train_epoch_start(self) -> None:
+        if self.global_step > 0:
+            return super().on_train_epoch_start()
 
         # set initial states that are needed for training
         assert self.trainer.train_dataloader is not None
         batch = next(iter(self.trainer.train_dataloader))
 
-        x = batch["input"].squeeze(0)
+        x = batch["input"].squeeze(0).squeeze(-1)
 
         states = get_states(
             h=x,
@@ -286,8 +290,10 @@ class DifferentiablePreisach(BaseModule):
         # set the states to the model
         self._states = states
 
+        return super().on_train_epoch_start()
+
     def common_step(
-        self, batch: TimeSeriesSample, batch_idx: int
+        self, batch: TimeSeriesSample, batch_idx: int, *, reuse_states: bool = False
     ) -> dict[str, torch.Tensor]:
         x = batch["input"]
         if "target" not in batch:
@@ -297,13 +303,13 @@ class DifferentiablePreisach(BaseModule):
         y = batch["target"]
 
         # get rid of batch dimension
-        x = x.squeeze(0)
-        y = y.squeeze(0)
+        x = x.squeeze(0).squeeze(-1)
+        y = y.squeeze(0).squeeze(-1)
 
         y_hat = self.model(
             h=x,
             temp=self.hparams["temp"],
-            states=self._states,
+            states=self._states if reuse_states else None,
             initial_state=None,
             return_states=False,
         )
@@ -312,6 +318,7 @@ class DifferentiablePreisach(BaseModule):
 
         return {
             "loss": loss,
+            "x": x,
             "y_hat": y_hat,
             "y": y,
             "density": self.model.density.value.detach().clone(),
@@ -320,7 +327,7 @@ class DifferentiablePreisach(BaseModule):
     def training_step(
         self, batch: TimeSeriesSample, batch_idx: int
     ) -> dict[str, torch.Tensor]:
-        out = self.common_step(batch, batch_idx)
+        out = self.common_step(batch, batch_idx, reuse_states=True)
 
         self.log("train/loss", out["loss"], prog_bar=True, on_step=True)
 
@@ -329,7 +336,7 @@ class DifferentiablePreisach(BaseModule):
     def validation_step(
         self, batch: TimeSeriesSample, batch_idx: int
     ) -> dict[str, torch.Tensor]:
-        out = self.common_step(batch, batch_idx)
+        out = self.common_step(batch, batch_idx, reuse_states=False)
 
         self.log("validation/loss", out["loss"], prog_bar=True, on_step=True)
 

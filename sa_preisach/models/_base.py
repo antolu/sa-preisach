@@ -13,7 +13,26 @@ class BaseModule(L.LightningModule):
         self.validation_outputs: list[dict[str, torch.Tensor]] = []
 
     def on_fit_start(self) -> None:
-        # check that we only have 1 training and validation batch
+        self.maybe_compile_model()
+
+        return super().on_fit_start()
+
+    def maybe_compile_model(self) -> None:
+        """
+        Compile the model if the "compile_model" key is present in the hyperparameters
+        and is set to True. This is up to the subclass to implement. This also
+        requires the model to be set to the "model" attribute.
+        """
+        if self.hparams.get("compile_model"):
+            for name, mod in self.named_children():
+                if "loss" in name.lower():
+                    continue
+                setattr(self, name, torch.compile(mod))
+
+    def on_train_epoch_start(self) -> None:
+        if self.global_step > 0:
+            return super().on_train_epoch_start()
+            # check that we only have 1 training and validation batch
         if self.trainer.train_dataloader is None:
             msg = "No training dataloader found"
             raise ValueError(msg)
@@ -34,21 +53,7 @@ class BaseModule(L.LightningModule):
             msg = "Validation dataloader must have only 1 batch"
             raise ValueError(msg)
 
-        self.maybe_compile_model()
-
-        return super().on_fit_start()
-
-    def maybe_compile_model(self) -> None:
-        """
-        Compile the model if the "compile_model" key is present in the hyperparameters
-        and is set to True. This is up to the subclass to implement. This also
-        requires the model to be set to the "model" attribute.
-        """
-        if self.hparams.get("compile_model"):
-            for name, mod in self.named_children():
-                if "loss" in name.lower():
-                    continue
-                setattr(self, name, torch.compile(mod))
+        return super().on_train_epoch_start()
 
     def on_validation_epoch_start(self) -> None:
         self.validation_outputs.clear()
@@ -59,7 +64,7 @@ class BaseModule(L.LightningModule):
         outputs: dict[str, torch.Tensor],
         batch: TimeSeriesSample,
         batch_idx: int,
-        dataloader_idx: int,
+        dataloader_idx: int = 0,
     ) -> None:
         self.validation_outputs.append(outputs)
 
