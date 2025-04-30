@@ -3,8 +3,12 @@ sa_preisach/_version.py
 # Acc-Py specific
 docs/html/
 
+# neptune
+.neptune/
+
 # torch
 lightning_logs/
+logs/
 *.pth
 *.ckpt
 
