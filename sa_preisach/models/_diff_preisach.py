@@ -70,8 +70,8 @@ class DifferentiablePreisachModel(torch.nn.Module):
         self.mesh = torch.tensor(mesh, dtype=torch.float32)
 
         # Initialize the Preisach model
-        density = torch.zeros(len(self.mesh), dtype=torch.float32)
-        torch.nn.init.uniform(density)
+        density = torch.zeros(len(self.mesh), dtype=torch.float32) + 0.5
+        # torch.nn.init.uniform(density)
 
         self.density = GPyConstrainedParameter(
             density,
@@ -84,19 +84,19 @@ class DifferentiablePreisachModel(torch.nn.Module):
         self.m_scale = GPyConstrainedParameter(
             torch.tensor(1.0),
             constraint=gpytorch.constraints.Interval(*self.m_scale_bounds),
-            requires_grad=False,
+            requires_grad=True,
         )
 
         self.offset = GPyConstrainedParameter(
             torch.tensor(0.0),
             constraint=gpytorch.constraints.Interval(*self.offset_bounds),
-            requires_grad=False,
+            requires_grad=True,
         )
 
         self.h_slope = GPyConstrainedParameter(
             torch.tensor(1.0),
             constraint=gpytorch.constraints.Interval(*self.h_slope_bounds),
-            requires_grad=False,
+            requires_grad=True,
         )
 
     @typing.overload
