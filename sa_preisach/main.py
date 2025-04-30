@@ -15,7 +15,11 @@ from lightning.pytorch.cli import LightningArgumentParser
 from transformertf.main import NeptuneLoggerSaveConfigCallback, setup_logger
 
 from sa_preisach.data import PreisachDataModule
-from sa_preisach.models import SelfAdaptivePreisach
+from sa_preisach.models import (  # noqa: F401
+    BaseModule,
+    DifferentiablePreisach,
+    SelfAdaptivePreisach,
+)
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -146,9 +150,10 @@ def add_callback_defaults(parser: LightningArgumentParser) -> None:
 def main() -> None:
     torch.set_float32_matmul_precision("high")
     LightningCLI(
-        model_class=SelfAdaptivePreisach,
+        model_class=BaseModule,
         datamodule_class=PreisachDataModule,
         save_config_kwargs={"overwrite": True},
+        subclass_mode_model=True,
     )
 
 
