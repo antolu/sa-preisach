@@ -1,0 +1,52 @@
+trainer:
+  accelerator: cpu
+  max_epochs: 1000
+  min_epochs: 500
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 1
+  devices: 1
+  enable_checkpointing: false
+  gradient_clip_val: 1.0
+  # val_check_interval: 1.0
+  logger:
+    class_path: lightning.pytorch.loggers.neptune.NeptuneLogger
+    init_args:
+      project: hysteresis/Differentiable-Preisach
+      prefix: ""
+        # proxies={"http": "http://cs-513-ml001:8080", "https": "http://cs-513-ml001:8080"}
+  callbacks:
+    - class_path: sa_preisach.callbacks.PlotHysteresisCallback
+      init_args:
+        validate_every_n_epochs: 100
+        hysteron_scatter: false
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: validation/loss
+        mode: min
+        save_top_k: 1
+        filename: "epoch={epoch}-{validation/loss:.2e}"
+        auto_insert_metric_name: false
+
+
+data:
+  known_covariates: I_ref_A
+  target_covariate: B_meas_T_filtered
+  train_df_paths: sample_train.parquet
+  val_df_paths: sample_val.parquet
+  downsample: 50
+  target_depends_on: ${data.known_covariates}
+  extra_transforms:
+    B_meas_T_filtered:
+      - class_path: transformertf.data.transform.DiscreteFunctionTransform
+        init_args:
+          xs_: calibration_fn.csv
+
+model:
+  class_path: sa_preisach.models.DifferentiablePreisach
+  init_args:
+    mesh_scale: 0.1
+    mesh_density_function: "default"
+    temp: 1e-3
+    lr: 1e-2
+    use_step_lr: true
+    compile_model: false
