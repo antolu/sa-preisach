@@ -12,7 +12,11 @@ import lightning.pytorch.cli
 import pytorch_optimizer  # noqa: F401
 import torch
 from lightning.pytorch.cli import LightningArgumentParser
-from transformertf.main import NeptuneLoggerSaveConfigCallback, setup_logger
+from transformertf.main import (
+    NeptuneLoggerSaveConfigCallback,
+    _FilterCallback,
+    setup_logger,
+)
 
 from sa_preisach.data import PreisachDataModule
 from sa_preisach.models import (  # noqa: F401
@@ -86,6 +90,13 @@ class LightningCLI(lightning.pytorch.cli.LightningCLI):
         # if logger is a neptune logger, save the config to a temporary file and upload it
         # also track artifacts from datamodule
         if isinstance(self.trainer.logger, L.pytorch.loggers.neptune.NeptuneLogger):
+            import neptune
+
+            # filter out errors caused by logging epoch more than once
+            neptune.internal.operation_processors.async_operation_processor.logger.addFilter(
+                _FilterCallback()
+            )
+
             if "train_df_paths" in self.datamodule.hparams:
                 for train_df_path in self.datamodule.hparams["train_df_paths"]:
                     self.trainer.logger.experiment["train/dataset"].track_files(
