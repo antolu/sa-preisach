@@ -57,7 +57,7 @@ class LightningCLI(lightning.pytorch.cli.LightningCLI):
 
         add_callback_defaults(parser)
 
-    def before_fit(self) -> None:
+    def before_fit(self) -> None:  # noqa: PLR0912
         # hijack model checkpoint callbacks to save to checkpoint_dir/version_{version}
         if (
             hasattr(self.config, "fit")

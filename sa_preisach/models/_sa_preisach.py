@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import einops
-import lightning as L
 import torch
 from transformertf.data import TimeSeriesSample
 from transformertf.nn import MLP
@@ -12,6 +11,7 @@ from ..utils import (
     create_triangle_mesh,
     get_states,
 )
+from ._base import BaseModule
 
 
 class SelfAdaptivePreisachModel(torch.nn.Module):
@@ -109,7 +109,7 @@ class SelfAdaptivePreisachModel(torch.nn.Module):
         )
 
 
-class SelfAdaptivePreisach(L.LightningModule):
+class SelfAdaptivePreisach(BaseModule):
     def __init__(  # noqa: PLR0913
         self,
         mesh_size: float,
@@ -142,18 +142,7 @@ class SelfAdaptivePreisach(L.LightningModule):
             requires_grad=True,
         )
 
-        self.validation_outputs: list[dict[str, torch.Tensor]] = []
         self.automatic_optimization = False
-
-    def on_fit_start(self) -> None:
-        if self.hparams["compile_model"]:
-            self.model = torch.compile(self.model)
-
-        return super().on_fit_start()
-
-    def on_validation_epoch_start(self) -> None:
-        self.validation_outputs.clear()
-        return super().on_validation_epoch_start()
 
     def forward(
         self, x: torch.Tensor, y0: torch.Tensor | float = 0.0, *, temp: float = 1e-3
@@ -263,7 +252,6 @@ class SelfAdaptivePreisach(L.LightningModule):
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=False, on_epoch=True)
 
-        self.validation_outputs.append(out)
         return out
 
     def parameter_constraint_loss(self) -> torch.Tensor:
