@@ -10,7 +10,6 @@ trainer:
   #logger:
   #  class_path: lightning.pytorch.loggers.neptune.NeptuneLogger
   #  init_args:
-  #    api_key: API_KEY,
   #    project: hysteresis/Preisach-NN
   #    prefix: ""
         # proxies={"http": "http://cs-513-ml001:8080", "https": "http://cs-513-ml001:8080"}
@@ -33,12 +32,14 @@ data:
           xs_: calibration_fn.csv
 
 model:
-  mesh_size: 0.01
-  hidden_dim: [32, 32, 32]
-  temp: 1e-2
-  lr: 1e-2
-  lr_scale: 1e-3
-  lr_sa: 1e-1
-  gradient_clip: 1.0
-  dist_threshold: 1e-3
-  compile_model: false
+  class_path: sa_preisach.models.SelfAdaptivePreisach
+  init_args:
+    mesh_size: 0.01
+    hidden_dim: [32, 32, 32]
+    temp: 1e-2
+    lr: 1e-2
+    lr_scale: 1e-3
+    lr_sa: 1e-1
+    gradient_clip: 1.0
+    dist_threshold: 1e-3
+    compile_model: false
