@@ -24,6 +24,28 @@ def exponential_mesh(
     return mesh_scale * (1.0 - np.exp(-np.abs(x - y) / ls)) + min_density
 
 
+_DENSITY_FUNCTIONS: dict[
+    str, typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray]
+] = {
+    "constant": constant_mesh_size,
+    "exponential": exponential_mesh,
+    "default": default_mesh_size,
+}
+
+
+def make_mesh_size_function(
+    mesh_function: str,
+) -> typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray]:
+    """
+    Create a mesh size function based on the given string.
+    """
+    if mesh_function not in _DENSITY_FUNCTIONS:
+        msg = f"Invalid mesh size function '{mesh_function}'. Valid options are: {list(_DENSITY_FUNCTIONS.keys())}"
+        raise ValueError(msg)
+
+    return _DENSITY_FUNCTIONS[mesh_function]
+
+
 def create_triangle_mesh(
     mesh_scale: float,
     mesh_density_function: (

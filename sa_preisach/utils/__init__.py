@@ -4,6 +4,7 @@ from ._mesh import (
     create_triangle_mesh,
     default_mesh_size,
     exponential_mesh,
+    make_mesh_size_function,
 )
 from ._states import get_states, initialize_state, sweep_left, sweep_up, switch
 
@@ -17,6 +18,7 @@ for _mod in (
     get_states,
     sweep_up,
     sweep_left,
+    make_mesh_size_function,
 ):
     replace_modname(_mod, __name__)
 
@@ -32,6 +34,7 @@ __all__ = [
     "exponential_mesh",
     "get_states",
     "initialize_state",
+    "make_mesh_size_function",
     "sweep_left",
     "sweep_up",
     "switch",
