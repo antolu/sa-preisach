@@ -338,7 +338,7 @@ class DifferentiablePreisach(BaseModule):
     ) -> dict[str, torch.Tensor]:
         out = self.common_step(batch, batch_idx, reuse_states=False)
 
-        self.log("validation/loss", out["loss"], prog_bar=True, on_step=True)
+        self.log("validation/loss", out["loss"], prog_bar=True)
 
         return out
 
