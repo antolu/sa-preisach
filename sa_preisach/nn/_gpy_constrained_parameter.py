@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import typing
 
+import gpytorch
 import gpytorch.constraints
 import torch
 
 
-class GPyConstrainedParameter(torch.nn.Module):
+class GPyConstrainedParameter(gpytorch.Module):
     def __init__(
         self,
         data: torch.Tensor,
@@ -21,6 +22,7 @@ class GPyConstrainedParameter(torch.nn.Module):
         self.raw_parameter = torch.nn.Parameter(
             self.inverse(data), requires_grad=requires_grad, **kwargs
         )
+        self.register_constraint("raw_parameter", constraint)
 
     def forward(self) -> torch.Tensor:
         return self.constraint.transform(self.raw_parameter)
