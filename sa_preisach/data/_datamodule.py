@@ -81,8 +81,6 @@ class PreisachDataModule(TimeSeriesDataModule):
         else:
             target_data = None
 
-        breakpoint()
-
         return TimeSeriesDataset(
             input_data=df[input_cols]
             if isinstance(df, pd.DataFrame)
