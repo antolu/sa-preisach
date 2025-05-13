@@ -25,7 +25,7 @@ CPU_DEVICE = torch.device("cpu")
 
 
 class DifferentiablePreisachNNModel(BaseModule):
-    def __init__(  # noqa: PLR0913:w
+    def __init__(  # noqa: PLR0913
         self,
         *,
         mesh_size: float,
