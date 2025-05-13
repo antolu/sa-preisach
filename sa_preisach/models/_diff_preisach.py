@@ -19,6 +19,9 @@ from ..utils import (
 )
 from ._base import BaseModule
 
+if typing.TYPE_CHECKING:
+    import numpy as np
+
 
 class DifferentiablePreisachModel(torch.nn.Module):
     """
@@ -50,9 +53,8 @@ class DifferentiablePreisachModel(torch.nn.Module):
         offset_bounds: tuple[float, float] = (-10.0, 10.0),
         h_slope_bounds: tuple[float, float] = (10.0, 10.0),
         use_normalized_density: bool = True,
-        mesh_density_function: typing.Literal[
-            "constant", "exponential", "default"
-        ] = "default",
+        mesh_density_function: typing.Literal["constant", "exponential", "default"]
+        | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
     ) -> None:
         super().__init__()
         self.mesh_scale = mesh_scale
@@ -60,7 +62,12 @@ class DifferentiablePreisachModel(torch.nn.Module):
         self.offset_bounds = offset_bounds
         self.h_slope_bounds = h_slope_bounds
 
-        density_function = make_mesh_size_function(mesh_density_function)
+        if not callable(mesh_density_function):
+            density_function = make_mesh_size_function(mesh_density_function)
+        else:
+            density_function = mesh_density_function
+
+        self.mesh_density_function = density_function
 
         # Create the mesh
         mesh = create_triangle_mesh(
@@ -196,9 +203,8 @@ class DifferentiablePreisach(BaseModule):
         offset_bounds: tuple[float, float] = (-10.0, 10.0),
         h_slope_bounds: tuple[float, float] = (-10.0, 10.0),
         use_normalized_density: bool = True,
-        mesh_density_function: typing.Literal[
-            "constant", "exponential", "default"
-        ] = "default",
+        mesh_density_function: typing.Literal["constant", "exponential", "default"]
+        | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
         lr: float = 1e-3,
         weight_decay: float = 0.0,
         momentum: float = 0.0,
