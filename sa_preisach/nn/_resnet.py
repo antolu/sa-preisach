@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from transformertf.nn import get_activation, VALID_ACTIVATIONS
+from transformertf.nn import VALID_ACTIVATIONS, get_activation
 
 
 class ResNetMLP(torch.nn.Module):
@@ -45,5 +45,5 @@ class ResNetMLP(torch.nn.Module):
             x = self.residual_layers[i + 2](x)
             x = self.residual_layers[i + 3](x)
             # x += residual  # Add residual connection
-            x = x + residual  # noqa: PLR6104
+            x = x + residual
         return self.output_layer(x)

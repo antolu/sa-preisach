@@ -148,10 +148,8 @@ class DifferentiablePreisachNN(L.LightningModule):
             if loss_weights is not None
             else None
         )
-        self.validation_outputs = []
         self.automatic_optimization = False
 
-        self.current_state: torch.Tensor | None = None
         self.states: torch.Tensor | None = None
 
     def on_fit_start(self) -> None:
@@ -207,7 +205,7 @@ class DifferentiablePreisachNN(L.LightningModule):
         out = self.common_step(
             batch,
             batch_idx,
-            states=self.states
+            states=self.states  # reuse previous states for faster training
             if self.states is not None
             and self.current_epoch > self.hparams["freeze_initial_state_after"]
             else None,
@@ -372,8 +370,8 @@ class DifferentiablePreisachNN(L.LightningModule):
         mesh = torch.tensor(mesh, dtype=torch.float32, device=device)
 
         if randomize:
-            mesh[:, 0] = mesh[:, 0] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2  # noqa: PLR6104
-            mesh[:, 1] = mesh[:, 1] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2  # noqa: PLR6104
+            mesh[:, 0] = mesh[:, 0] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2
+            mesh[:, 1] = mesh[:, 1] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2
             mesh[:, 0] = torch.clamp(mesh[:, 0], min=0.0, max=1.0)
             mesh[:, 1] = torch.clamp(mesh[:, 1], min=0.0, max=1.0)
 
