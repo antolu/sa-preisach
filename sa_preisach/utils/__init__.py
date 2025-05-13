@@ -1,5 +1,7 @@
 from .._mod_replace import replace_modname
+from ._grad import set_requires_grad
 from ._mesh import (
+    DefaultMeshSizeFunction,
     constant_mesh_size,
     create_triangle_mesh,
     default_mesh_size,
@@ -10,6 +12,7 @@ from ._states import get_states, initialize_state, sweep_left, sweep_up, switch
 
 for _mod in (
     default_mesh_size,
+    DefaultMeshSizeFunction,
     constant_mesh_size,
     exponential_mesh,
     create_triangle_mesh,
@@ -19,6 +22,7 @@ for _mod in (
     sweep_up,
     sweep_left,
     make_mesh_size_function,
+    set_requires_grad,
 ):
     replace_modname(_mod, __name__)
 
@@ -28,6 +32,7 @@ del replace_modname
 
 
 __all__ = [
+    "DefaultMeshSizeFunction",
     "constant_mesh_size",
     "create_triangle_mesh",
     "default_mesh_size",
@@ -35,6 +40,7 @@ __all__ = [
     "get_states",
     "initialize_state",
     "make_mesh_size_function",
+    "set_requires_grad",
     "sweep_left",
     "sweep_up",
     "switch",

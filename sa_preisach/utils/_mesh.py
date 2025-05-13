@@ -46,6 +46,15 @@ def make_mesh_size_function(
     return _DENSITY_FUNCTIONS[mesh_function]
 
 
+class DefaultMeshSizeFunction:
+    def __init__(self, scale: float = 0.2, offset: float = 0.05):
+        self.scale = scale
+        self.offset = offset
+
+    def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
+        return mesh_scale * (self.scale * np.abs(x - y) + self.offset)
+
+
 def create_triangle_mesh(
     mesh_scale: float,
     mesh_density_function: (
