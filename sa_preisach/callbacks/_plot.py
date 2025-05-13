@@ -9,14 +9,22 @@ import matplotlib.pyplot as plt
 import torch
 from transformertf.data import TimeSeriesDataset
 
-from ..models import DifferentiablePreisach, SelfAdaptivePreisach
+from ..models import (
+    DifferentiablePreisach,
+    DifferentiablePreisachNN,
+    SelfAdaptivePreisach,
+)
 
 log = logging.getLogger(__name__)
 
 
 class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
     def __init__(
-        self, *, validate_every_n_epochs: int = 1, hysteron_scatter: bool = True
+        self,
+        *,
+        validate_every_n_epochs: int = 1,
+        hysteron_scatter: bool = True,
+        plot_unscaled: bool = False,
     ) -> None:
         super().__init__()
         self.validate_every_n_epochs = validate_every_n_epochs
@@ -68,7 +76,7 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         if isinstance(pl_module, SelfAdaptivePreisach):
             alpha = pl_module.model.alpha.value
             beta = pl_module.model.beta.value
-        elif isinstance(pl_module, DifferentiablePreisach):
+        elif isinstance(pl_module, DifferentiablePreisach | DifferentiablePreisachNN):
             alpha = pl_module.model.mesh[:, 1]
             beta = pl_module.model.mesh[:, 0]
         else:
