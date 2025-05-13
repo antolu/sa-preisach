@@ -24,7 +24,7 @@ from ._base import BaseModule
 CPU_DEVICE = torch.device("cpu")
 
 
-class DifferentiablePreisachNNModel(BaseModule):
+class DifferentiablePreisachNNModel(torch.nn.Module):
     def __init__(  # noqa: PLR0913
         self,
         *,
@@ -34,15 +34,19 @@ class DifferentiablePreisachNNModel(BaseModule):
         m_scale_bounds: tuple[float, float] = (0.0, 10.0),
         offset_bounds: tuple[float, float] = (-10.0, 10.0),
         normalized_density: bool = False,
-        mesh_function: typing.Literal["constant", "default", "exponential"]
+        mesh_density_function: typing.Literal["constant", "default", "exponential"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
     ) -> None:
         super().__init__()
 
-        self.mesh = self.resample_mesh(
-            mesh_size,
-            mesh_function=mesh_function,
-        )
+        self.mesh = torch.from_numpy(
+            create_triangle_mesh(
+                mesh_size,
+                mesh_density_function=mesh_density_function
+                if callable(mesh_density_function)
+                else make_mesh_size_function(mesh_density_function),
+            )
+        ).float()
         n_mesh_points = self.mesh.shape[0]
 
         self.density = ResNetMLP(
@@ -107,12 +111,12 @@ class DifferentiablePreisachNNModel(BaseModule):
         return self.m_scale.value * m + self.m_offset.value, density, states
 
 
-class DifferentiablePreisachNN(L.LightningModule):
+class DifferentiablePreisachNN(BaseModule):
     model: DifferentiablePreisachNNModel
 
     def __init__(  # noqa: PLR0913
         self,
-        mesh_size: float,
+        mesh_scale: float,
         *,
         hidden_dim: int,
         num_layers: int = 3,
@@ -120,11 +124,11 @@ class DifferentiablePreisachNN(L.LightningModule):
         lr: float = 1e-2,
         lr_scale: float = 1e-3,
         lr_step_interval: int = 100,
-        lr_step_gamma: float = 0.9,
+        lr_gamma: float = 0.9,
         m_scale_bounds: tuple[float, float] = (0.0, 10.0),
         offset_bounds: tuple[float, float] = (-10.0, 10.0),
         normalized_density: bool = False,
-        mesh_function: typing.Literal["constant", "default", "exponential"]
+        mesh_density_function: typing.Literal["constant", "default", "exponential"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
         compile_model: bool = True,
         resample_every: int = 10,
@@ -136,12 +140,12 @@ class DifferentiablePreisachNN(L.LightningModule):
         self.save_hyperparameters(ignore=["loss_weights"])
 
         self.model = DifferentiablePreisachNNModel(
-            mesh_size=mesh_size,
+            mesh_size=mesh_scale,
             hidden_dim=hidden_dim,
             m_scale_bounds=m_scale_bounds,
             offset_bounds=offset_bounds,
             normalized_density=normalized_density,
-            mesh_function=mesh_function,
+            mesh_density_function=mesh_density_function,
         )
         self.loss_weights = (
             torch.nn.Parameter(loss_weights, requires_grad=True)
@@ -153,8 +157,8 @@ class DifferentiablePreisachNN(L.LightningModule):
         self.states: torch.Tensor | None = None
 
     def on_fit_start(self) -> None:
-        if self.hparams["compile_model"]:
-            self.model = torch.compile(self.model)
+        # if self.hparams["compile_model"]:
+        #     self.model = torch.compile(self.model)
 
         self.model.mesh = self.model.mesh.to(self.device)
 
@@ -306,7 +310,7 @@ class DifferentiablePreisachNN(L.LightningModule):
         scheduler1 = torch.optim.lr_scheduler.StepLR(
             optimizer1,
             step_size=self.hparams["lr_step_interval"],
-            gamma=self.hparams["lr_step_gamma"],
+            gamma=self.hparams["lr_gamma"],
         )
 
         optimizers = [optimizer1]
@@ -316,9 +320,9 @@ class DifferentiablePreisachNN(L.LightningModule):
 
     def on_train_epoch_start(self) -> None:
         if self.current_epoch % self.hparams["resample_every"] == 0:
-            self.model.mesh = self.model.resample_mesh(
-                self.hparams["mesh_size"],
-                mesh_function=self.hparams["mesh_function"],
+            self.model.mesh = self.resample_mesh(
+                self.hparams["mesh_scale"],
+                mesh_density_function=self.hparams["mesh_density_function"],
                 randomize=True,
                 device=self.device,
             )
@@ -353,25 +357,25 @@ class DifferentiablePreisachNN(L.LightningModule):
 
     @staticmethod
     def resample_mesh(
-        mesh_size: float,
+        mesh_scale: float,
         *,
-        mesh_function: typing.Literal["constant", "default"]
+        mesh_density_function: typing.Literal["constant", "default"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
         randomize: float = True,
         device: torch.device = CPU_DEVICE,
     ) -> torch.Tensor:
         mesh = create_triangle_mesh(
-            mesh_size,
-            make_mesh_size_function(mesh_function)
-            if not callable(mesh_function)
-            else mesh_function,
+            mesh_scale,
+            make_mesh_size_function(mesh_density_function)
+            if not callable(mesh_density_function)
+            else mesh_density_function,
         )
 
         mesh = torch.tensor(mesh, dtype=torch.float32, device=device)
 
         if randomize:
-            mesh[:, 0] = mesh[:, 0] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2
-            mesh[:, 1] = mesh[:, 1] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2
+            mesh[:, 0] = mesh[:, 0] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2  # noqa: PLR6104
+            mesh[:, 1] = mesh[:, 1] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2  # noqa: PLR6104
             mesh[:, 0] = torch.clamp(mesh[:, 0], min=0.0, max=1.0)
             mesh[:, 1] = torch.clamp(mesh[:, 1], min=0.0, max=1.0)
 
