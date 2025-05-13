@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import collections
+import typing
+
 import lightning as L
 import torch
 from transformertf.data import TimeSeriesSample
@@ -75,3 +78,32 @@ class BaseModule(L.LightningModule):
     def on_before_optimizer_step(self, optimizer: torch.optim.Optimizer) -> None:
         if self.hparams.get("log_grad_norm") and self.global_rank == 0:
             self.log_dict(L.pytorch.utilities.grad_norm(self, norm_type=2))
+
+    def state_dict(
+        self,
+        *args: typing.Any,
+        destination: dict[str, torch.Tensor] | None = None,
+        prefix: str = "",
+        keep_vars: bool = False,
+    ) -> dict[str, torch.Tensor]:
+        state_dict = super().state_dict(
+            *args, destination=destination, prefix=prefix, keep_vars=keep_vars
+        )
+
+        # hack to save the original model state dict and not the compiled one
+        # this assumes that internally the model is stored in the `model` attribute
+        # and that the model is not compiled when the LightningModule is instantiated
+
+        # keys are xxx._orig_mod.xxx, remove _orig_mod
+        if self.hparams.get("compile_model"):
+            odict = collections.OrderedDict()
+            for k in list(state_dict.keys()):
+                if "_orig_mod" in k:
+                    new_key = k.replace("_orig_mod.", "")
+                    odict[new_key] = state_dict[k]
+                else:
+                    odict[k] = state_dict[k]
+
+            state_dict = odict
+
+        return state_dict
