@@ -34,7 +34,7 @@ class DifferentiablePreisachNNModel(BaseModule):
         m_scale_bounds: tuple[float, float] = (0.0, 10.0),
         offset_bounds: tuple[float, float] = (-10.0, 10.0),
         normalized_density: bool = False,
-        mesh_function: typing.Literal["constant", "default"]
+        mesh_function: typing.Literal["constant", "default", "exponential"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
     ) -> None:
         super().__init__()
