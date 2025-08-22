@@ -9,7 +9,7 @@ import lightning as L
 import numpy as np
 import torch
 from transformertf.data import TimeSeriesSample
-from transformertf.nn.functional import masked_mse_loss
+from transformertf.nn.functional import mse_loss
 
 from ..data import PreisachDataModule
 from ..nn import BinaryParameter, GPyConstrainedParameter, ResNetMLP
@@ -33,7 +33,7 @@ class DifferentiablePreisachNNModel(torch.nn.Module):
         num_layers: int = 3,
         m_scale_bounds: tuple[float, float] = (0.0, 10.0),
         offset_bounds: tuple[float, float] = (-10.0, 10.0),
-        normalized_density: bool = False,
+        normalized_density: bool = True,
         mesh_density_function: typing.Literal["constant", "default", "exponential"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
     ) -> None:
@@ -114,6 +114,51 @@ class DifferentiablePreisachNNModel(torch.nn.Module):
 class DifferentiablePreisachNN(BaseModule):
     model: DifferentiablePreisachNNModel
 
+    """
+    Parameters
+    ----------
+
+    mesh_scale : float
+        The scale of the mesh. This is used to create the mesh for the Preisach model.
+    hidden_dim : int
+        The number of hidden units in the MLP used to model the Preisach density.
+    num_layers : int
+        The number of layers in the MLP used to model the Preisach density.
+    temp : float
+        The temperature parameter for the hysteron activation function (tanh).
+    lr : float
+        The learning rate for the main optimizer.
+    lr_scale : float
+        The learning rate for the scale and offset parameters.
+    lr_step_interval : int
+        The interval at which to step the learning rate scheduler.
+    lr_gamma : float
+        The factor by which to scale the learning rate at each step.
+    m_scale_bounds : tuple[float, float]
+        The bounds for the scale parameter of the Preisach model (scale of M).
+    offset_bounds : tuple[float, float]
+        The bounds for the offset parameter of the Preisach model (offset of M).
+    normalized_density : bool
+        Whether to normalize the density function.
+    mesh_density_function : typing.Literal["constant", "default", "exponential"] | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray]
+        The function to use for the mesh density.
+        If a string is provided, it must be one of "constant", "default", or "exponential".
+        If a callable is provided, it must take the mesh and the scale as input and return the density.
+    compile_model : bool
+        Whether to compile the model using torch.compile.
+    resample_every : int
+        The number of epochs after which to resample the mesh.
+    freeze_initial_state_after : int
+        The number of epochs after which to freeze the initial state.
+    update_initial_state_every : int
+        When to regularly update the initial state.
+    loss_weights : torch.Tensor | None
+        The weights to use for the loss function. If None, weights are not used.
+    _n_train_samples : int
+        The number of training samples. If provided, loss_weights must be None.
+        This is used to create a loss weight for each training sample, and is passed by LightningCLI.
+    """
+
     def __init__(  # noqa: PLR0913
         self,
         mesh_scale: float,
@@ -123,11 +168,12 @@ class DifferentiablePreisachNN(BaseModule):
         temp: float = 1e-3,
         lr: float = 1e-2,
         lr_scale: float = 1e-3,
+        lr_sa: float = 1e-2,
         lr_step_interval: int = 100,
         lr_gamma: float = 0.9,
         m_scale_bounds: tuple[float, float] = (0.0, 10.0),
         offset_bounds: tuple[float, float] = (-10.0, 10.0),
-        normalized_density: bool = False,
+        normalized_density: bool = True,
         mesh_density_function: typing.Literal["constant", "default", "exponential"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
         compile_model: bool = True,
@@ -135,6 +181,7 @@ class DifferentiablePreisachNN(BaseModule):
         freeze_initial_state_after: int = 100,
         update_initial_state_every: int = 100,
         loss_weights: torch.Tensor | None = None,
+        n_train_samples: int = 0,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["loss_weights"])
@@ -147,6 +194,17 @@ class DifferentiablePreisachNN(BaseModule):
             normalized_density=normalized_density,
             mesh_density_function=mesh_density_function,
         )
+
+        if n_train_samples > 0:
+            if loss_weights is not None:
+                msg = "loss_weights must be None if _n_train_samples is provided"
+                raise ValueError(msg)
+            loss_weights = torch.ones(
+                n_train_samples, dtype=torch.float32, device=self.device
+            )
+        else:
+            loss_weights = loss_weights.float() if loss_weights is not None else None
+
         self.loss_weights = (
             torch.nn.Parameter(loss_weights, requires_grad=True)
             if loss_weights is not None
@@ -187,7 +245,7 @@ class DifferentiablePreisachNN(BaseModule):
         y_hat, density, states = self(
             x, y0=y[0], temp=self.hparams["temp"], states=states
         )
-        loss1 = masked_mse_loss(
+        loss1 = mse_loss(
             y_hat, y, weight=weights if weights is not None else None
         )
         unweighted_loss = torch.nn.functional.mse_loss(y_hat, y)
@@ -213,7 +271,7 @@ class DifferentiablePreisachNN(BaseModule):
             if self.states is not None
             and self.current_epoch > self.hparams["freeze_initial_state_after"]
             else None,
-            weights=self.loss_weights.data if self.loss_weights is not None else None,
+            weights=self.loss_weights if self.loss_weights is not None else None,
         )
         loss = out["loss"]
 
@@ -250,6 +308,16 @@ class DifferentiablePreisachNN(BaseModule):
             "train/mse": "unweighted_loss",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=True, on_epoch=False)
+
+        # if loss weights are used, log the magnitude of the weights
+        if self.loss_weights is not None:
+            self.log(
+                "train/loss_weights",
+                torch.mean(self.loss_weights.data),
+                prog_bar=True,
+                on_step=False,
+                on_epoch=True,
+            )
 
         return out
 
@@ -300,7 +368,7 @@ class DifferentiablePreisachNN(BaseModule):
             torch.optim.SGD([
                 {
                     "params": self.loss_weights,
-                    "lr": self.hparams["lr"],
+                    "lr": self.hparams["lr_sa"],
                     "weight_decay": 0.0,
                 }
             ])
@@ -374,17 +442,21 @@ class DifferentiablePreisachNN(BaseModule):
         mesh = torch.tensor(mesh, dtype=torch.float32, device=device)
 
         if randomize:
-            mesh[:, 0] = mesh[:, 0] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2  # noqa: PLR6104
-            mesh[:, 1] = mesh[:, 1] + (torch.rand(mesh.shape[0]) - 0.5) * 2e-2  # noqa: PLR6104
+            mesh[:, 0] = (
+                mesh[:, 0] + (torch.rand(mesh.shape[0], device=device) - 0.5) * 2e-2
+            )  # noqa: PLR6104
+            mesh[:, 1] = (
+                mesh[:, 1] + (torch.rand(mesh.shape[0], device=device) - 0.5) * 2e-2
+            )  # noqa: PLR6104
             mesh[:, 0] = torch.clamp(mesh[:, 0], min=0.0, max=1.0)
             mesh[:, 1] = torch.clamp(mesh[:, 1], min=0.0, max=1.0)
 
             # clamp values so that second column is always greater than first
             mesh[:, 1] = torch.clamp(
-                mesh[:, 1], min=mesh[:, 0], max=torch.tensor(1.0).float()
+                mesh[:, 1], min=mesh[:, 0], max=torch.tensor(1.0, device=device).float()
             )
             mesh[:, 0] = torch.clamp(
-                mesh[:, 0], min=torch.tensor(0.0).float(), max=mesh[:, 1]
+                mesh[:, 0], min=torch.tensor(0.0, device=device).float(), max=mesh[:, 1]
             )
 
         return mesh
@@ -471,7 +543,7 @@ class DifferentiablePreisachNN(BaseModule):
                 temp=model.hparams["temp"],
             )
 
-            loss = masked_mse_loss(y_hat, train_b_norm, weight=loss_weights)
+            loss = mse_loss(y_hat, train_b_norm, weight=loss_weights)
             loss.backward()
             optimizer.step()
             losses.append(loss.item())
