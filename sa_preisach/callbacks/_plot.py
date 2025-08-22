@@ -43,8 +43,9 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
 
         dataloader = trainer.train_dataloader
         if dataloader is None:
-            msg = "No datamodule found"
-            log.error(msg)
+            if trainer.global_step > 0:
+                msg = "No datamodule found"
+                log.error(msg)
             return super().on_validation_epoch_end(trainer, pl_module)
 
         dataset = typing.cast(TimeSeriesDataset, dataloader.dataset)
@@ -56,9 +57,9 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         x = last_output["x"]
         y = last_output["y"]
         y_hat = last_output["y_hat"]
-        x = x.squeeze(0)
-        y = y.squeeze(0)
-        y_hat = y_hat.squeeze(0)
+        x = x.squeeze(0).detach().cpu()
+        y = y.squeeze(0).detach().cpu()
+        y_hat = y_hat.squeeze(0).detach().cpu()
 
         x = h_transform.inverse_transform(x)
         y = b_transform.inverse_transform(x, y)
@@ -71,7 +72,7 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
 
         # plot the hysteron density
         density = last_output["density"]
-        density = density.squeeze(0)
+        density = density.squeeze(0).detach().cpu()
 
         if isinstance(pl_module, SelfAdaptivePreisach):
             alpha = pl_module.model.alpha.value
@@ -83,6 +84,9 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
             msg = "Model not supported"
             log.error(msg)
             return super().on_validation_epoch_end(trainer, pl_module)
+
+        alpha = alpha.detach().cpu()
+        beta = beta.detach().cpu()
 
         fig_density = plot_hysteron_density(
             alpha,
