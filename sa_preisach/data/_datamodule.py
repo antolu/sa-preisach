@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing
+import pathlib
 
 import pandas as pd
 from transformertf.data.dataset import TimeSeriesDataset
@@ -62,6 +63,12 @@ class PreisachDataModule(TimeSeriesDataModule):
         )
         self.save_hyperparameters(ignore=["extra_transforms"])
 
+        train_df_path = pathlib.Path(self._train_df_pths[0]).expanduser()
+        if train_df_path.exists():
+            self._n_train_samples = len(pd.read_parquet(train_df_path)) // downsample
+        else:
+            self._n_train_samples = 0
+
     def _make_dataset_from_df(
         self, df: pd.DataFrame | list[pd.DataFrame], *, predict: bool = False
     ) -> TimeSeriesDataset:
@@ -99,19 +106,26 @@ class PreisachDataModule(TimeSeriesDataModule):
         """
         super()._create_transforms()
 
-        # add normalization transform with minmax scaler
-        self._transforms[self.known_covariates[0].name] = TransformCollection(
-            *[
-                [
-                    *list(self.transforms[self.known_covariates[0].name].transforms),
-                    MinMaxScaler(min_=0.0, max_=1.0),
-                ]
-            ],
-        )
-        self._transforms[self.target_covariate.name] = TransformCollection(
-            *list(self.transforms[self.target_covariate.name].transforms),
-            MinMaxScaler(
-                min_=0.0,
-                max_=1.0,
-            ),
-        )
+        # # add normalization transform with minmax scaler
+        # self._transforms[self.known_covariates[0].name] = TransformCollection(
+        #     *[
+        #         [
+        #             *list(self.transforms[self.known_covariates[0].name].transforms),
+        #             MinMaxScaler(min_=0.0, max_=1.0),
+        #         ]
+        #     ],
+        # )
+        # self._transforms[self.target_covariate.name] = TransformCollection(
+        #     *list(self.transforms[self.target_covariate.name].transforms),
+        #     MinMaxScaler(
+        #         min_=0.0,
+        #         max_=1.0,
+        #     ),
+        # )
+
+    @property
+    def n_train_samples(self) -> int:
+        """
+        Number of training samples.
+        """
+        return self._n_train_samples
