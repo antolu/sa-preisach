@@ -1,0 +1,55 @@
+trainer:
+  accelerator: cpu
+  max_epochs: 100
+  min_epochs: 10
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 1
+  devices: 1
+  enable_checkpointing: false
+  enable_progress_bar: true
+
+data:
+  class_path: sa_preisach.data.EncoderDecoderPreisachDataModule
+  init_args:
+    known_covariates: I_ref_A
+    target_covariate: B_meas_T_filtered
+    train_df_paths: sample_train.parquet
+    val_df_paths: sample_val.parquet
+    # Encoder-decoder sequence lengths
+    ctxt_seq_len: 800      # Context sequence for encoder (historical behavior)
+    tgt_seq_len: 200       # Target sequence for decoder (prediction length)
+    downsample: 50
+    target_depends_on: I_ref_A
+    batch_size: 8          # Small batch for testing
+    num_workers: 0         # Set to 0 for debugging
+    shuffle: false         # Disable for testing
+    extra_transforms:
+      B_meas_T_filtered:
+        - class_path: transformertf.data.transform.DiscreteFunctionTransform
+          init_args:
+            xs_: calibration_fn.csv
+
+model:
+  class_path: sa_preisach.models.EncoderDecoderPreisachNN
+  init_args:
+    mesh_scale: 0.01
+    # Transformer encoder parameters
+    sequence_features: 2   # H and B features in encoder input
+    d_model: 64           # Smaller model for testing
+    num_heads: 4          # Fewer heads for testing
+    num_encoder_layers: 2 # Fewer layers for testing
+    encoder_dropout: 0.1
+    # Preisach decoder parameters
+    hidden_dim: 32
+    num_layers: 2
+    temp: 1e-2
+    # Optimization parameters
+    lr: 1e-3
+    lr_scale: 1e-4
+    lr_step_interval: 50
+    lr_gamma: 0.95
+    # Physical constraints
+    m_scale_bounds: [0.0, 10.0]
+    offset_bounds: [-10.0, 10.0]
+    normalized_density: true
+    compile_model: false

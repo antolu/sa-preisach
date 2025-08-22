@@ -18,10 +18,12 @@ from transformertf.main import (
     setup_logger,
 )
 
-from sa_preisach.data import PreisachDataModule
+from transformertf.data.datamodule import DataModuleBase
+from sa_preisach.data import EncoderDecoderPreisachDataModule, PreisachDataModule
 from sa_preisach.models import (  # noqa: F401
     BaseModule,
     DifferentiablePreisach,
+    EncoderDecoderPreisachNN,
     SelfAdaptivePreisach,
 )
 
@@ -64,6 +66,12 @@ class LightningCLI(lightning.pytorch.cli.LightningCLI):
         add_trainer_defaults(parser)
 
         add_callback_defaults(parser)
+
+        parser.link_arguments(
+            "data.n_train_samples",
+            "model.init_args.n_train_samples",
+            apply_on="instantiate",
+        )
 
     def before_fit(self) -> None:  # noqa: PLR0912
         # hijack model checkpoint callbacks to save to checkpoint_dir/version_{version}
@@ -162,9 +170,10 @@ def main() -> None:
     torch.set_float32_matmul_precision("high")
     LightningCLI(
         model_class=BaseModule,
-        datamodule_class=PreisachDataModule,
+        datamodule_class=DataModuleBase,
         save_config_kwargs={"overwrite": True},
         subclass_mode_model=True,
+        subclass_mode_data=True,
     )
 
 
