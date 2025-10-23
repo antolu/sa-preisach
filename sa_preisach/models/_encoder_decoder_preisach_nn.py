@@ -116,7 +116,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             Magnetization predictions [batch_size, tgt_seq_len] and density weights [batch_size, n_mesh_points]
         """
         batch_size = encoder_input.shape[0]
-        tgt_seq_len = decoder_input.shape[1]
+        decoder_input.shape[1]
 
         # Expand mesh coordinates for batch
         mesh_coords = self.base_mesh.unsqueeze(0).expand(
@@ -148,10 +148,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
 
         # Process each batch element separately using get_states
         # Note: torch.vmap doesn't work here due to data-dependent control flow in get_states
-        batch_states = []
-        for b in range(batch_size):
-            batch_states.append(
-                get_states(
+        batch_states = [get_states(
                     h=h[b],  # [tgt_seq_len]
                     alpha=alpha[b],  # [n_mesh_points]
                     beta=beta[b],  # [n_mesh_points]
@@ -160,8 +157,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
                     temp=temp,
                     dtype=torch.float32,
                     training=self.training,
-                )
-            )
+                ) for b in range(batch_size)]
         states = torch.stack(
             batch_states, dim=0
         )  # [batch_size, tgt_seq_len, n_mesh_points]

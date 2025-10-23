@@ -123,8 +123,8 @@ class PreisachTransformerEncoder(torch.nn.Module):
         torch.Tensor
             Initial hysteron states of shape [batch_size, n_mesh_points]
         """
-        batch_size, seq_len, _ = sequence.shape
-        batch_size_mesh, n_mesh_points, _ = mesh_coords.shape
+        batch_size, _seq_len, _ = sequence.shape
+        batch_size_mesh, _n_mesh_points, _ = mesh_coords.shape
 
         assert batch_size == batch_size_mesh, "Batch sizes must match"
 
@@ -163,9 +163,7 @@ class PreisachTransformerEncoder(torch.nn.Module):
         initial_states = self.state_projection(
             mesh_contextualized
         )  # [batch_size, n_mesh_points, 1]
-        initial_states = initial_states.squeeze(-1)  # [batch_size, n_mesh_points]
-
-        return initial_states
+        return initial_states.squeeze(-1)  # [batch_size, n_mesh_points]
 
 
 class PositionalEncoding(torch.nn.Module):
@@ -210,5 +208,5 @@ class PositionalEncoding(torch.nn.Module):
         torch.Tensor
             Input with positional encoding added
         """
-        x = x + self.pe[: x.size(1), :].transpose(0, 1)
+        x += self.pe[: x.size(1), :].transpose(0, 1)
         return self.dropout(x)
