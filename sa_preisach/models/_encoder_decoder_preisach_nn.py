@@ -5,19 +5,17 @@ import typing
 
 import einops
 import gpytorch.constraints
-import lightning as L
 import numpy as np
 import torch
 from transformertf.data import EncoderDecoderTargetSample
+from transformertf.models._base_transformer import create_mask
 from transformertf.nn.functional import mse_loss
 
-from ..data import PreisachDataModule
 from ..nn import GPyConstrainedParameter, PreisachTransformerEncoder, ResNetMLP
 from ..utils import (
     create_triangle_mesh,
-    get_batched_states,
+    get_states,
     make_mesh_size_function,
-    set_requires_grad,
 )
 from ._base import BaseModule
 
@@ -29,7 +27,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         self,
         *,
         mesh_size: float,
-        sequence_features: int = 2,
+        num_past_features: int = 2,
         d_model: int = 128,
         num_heads: int = 8,
         num_encoder_layers: int = 4,
@@ -57,11 +55,12 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
 
         # Transformer encoder for generating initial states
         self.encoder = PreisachTransformerEncoder(
-            sequence_features=sequence_features,
+            num_features=num_past_features,
             d_model=d_model,
             num_heads=num_heads,
             num_layers=num_encoder_layers,
             dropout=encoder_dropout,
+            dim_feedforward=hidden_dim,
         )
 
         # Density network (same as original model)
@@ -99,18 +98,18 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass of the encoder-decoder Preisach model.
-        
+
         Parameters
         ----------
         encoder_input : torch.Tensor
             Historical H/B sequences of shape [batch_size, ctxt_seq_len, sequence_features]
-        decoder_input : torch.Tensor  
+        decoder_input : torch.Tensor
             Current H sequences of shape [batch_size, tgt_seq_len, 1]
         encoder_mask : torch.Tensor, optional
             Attention mask for encoder sequences of shape [batch_size, ctxt_seq_len]
         y0 : torch.Tensor, optional
             Initial field values of shape [batch_size, 1]. If None, uses first decoder input.
-            
+
         Returns
         -------
         tuple[torch.Tensor, torch.Tensor]
@@ -118,53 +117,69 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         """
         batch_size = encoder_input.shape[0]
         tgt_seq_len = decoder_input.shape[1]
-        
+
         # Expand mesh coordinates for batch
-        mesh_coords = self.base_mesh.unsqueeze(0).expand(batch_size, -1, -1)  # [batch_size, n_mesh_points, 2]
+        mesh_coords = self.base_mesh.unsqueeze(0).expand(
+            batch_size, -1, -1
+        )  # [batch_size, n_mesh_points, 2]
         mesh_coords = mesh_coords.to(encoder_input.device)
-        
+
         # Encode initial hysteron states from historical sequences
         initial_states = self.encoder(
             sequence=encoder_input,
             mesh_coords=mesh_coords,
             sequence_mask=encoder_mask,
         )  # [batch_size, n_mesh_points]
-        
-        # Get initial field values
+
+        # Get initial field values - ensure always has batch dimension
         if y0 is None:
-            y0 = decoder_input[:, 0, 0]  # [batch_size]
+            y0 = encoder_input[:, -1, -1]  # [batch_size] last feature, last element
         else:
             y0 = y0.squeeze(-1)  # [batch_size]
-        initial_fields = y0.unsqueeze(-1)  # [batch_size, 1]
-        
+
+        # Ensure y0 always has batch dimension for vmap compatibility
+        if y0.dim() == 0:  # scalar case when batch_size=1
+            y0 = y0.unsqueeze(0)  # [1]
+
         # Compute hysteron states for decoder sequence
         h = decoder_input.squeeze(-1)  # [batch_size, tgt_seq_len]
-        alpha = mesh_coords[:, :, 1]  # [batch_size, n_mesh_points] 
-        beta = mesh_coords[:, :, 0]   # [batch_size, n_mesh_points]
-        
-        states = get_batched_states(
-            h=h,
-            alpha=alpha,
-            beta=beta,
-            initial_states=initial_states,
-            initial_fields=initial_fields,
-            temp=temp,
-            dtype=torch.float32,
-            training=self.training,
+        alpha = mesh_coords[:, :, 1]  # [batch_size, n_mesh_points]
+        beta = mesh_coords[:, :, 0]  # [batch_size, n_mesh_points]
+
+        # Process each batch element separately using get_states
+        # Note: torch.vmap doesn't work here due to data-dependent control flow in get_states
+        batch_states = []
+        for b in range(batch_size):
+            batch_states.append(
+                get_states(
+                    h=h[b],  # [tgt_seq_len]
+                    alpha=alpha[b],  # [n_mesh_points]
+                    beta=beta[b],  # [n_mesh_points]
+                    current_state=initial_states[b],  # [n_mesh_points]
+                    current_field=y0[b],  # scalar
+                    temp=temp,
+                    dtype=torch.float32,
+                    training=self.training,
+                )
+            )
+        states = torch.stack(
+            batch_states, dim=0
         )  # [batch_size, tgt_seq_len, n_mesh_points]
-        
+
         # Compute density weights
         density = self.density(self.base_mesh)  # [n_mesh_points, 1]
         density = self.density_activation(density)
         density = einops.rearrange(density, "n 1 -> 1 n")  # [1, n_mesh_points]
         density = density.expand(batch_size, -1)  # [batch_size, n_mesh_points]
-        
+
         # Compute magnetization for each time step
-        m = torch.sum(density.unsqueeze(1) * states, dim=-1) / torch.sum(density.unsqueeze(1), dim=-1)  # [batch_size, tgt_seq_len]
-        
+        m = torch.sum(density.unsqueeze(1) * states, dim=-1) / torch.sum(
+            density.unsqueeze(1), dim=-1
+        )  # [batch_size, tgt_seq_len]
+
         # Apply scale and offset
         m_out = self.m_scale.value * m + self.m_offset.value
-        
+
         return m_out, density
 
 
@@ -173,21 +188,21 @@ class EncoderDecoderPreisachNN(BaseModule):
 
     """
     Encoder-Decoder Preisach Neural Network model with transformer encoder.
-    
+
     This model extends the original Preisach NN by using a transformer encoder to generate
-    initial hysteron states from historical sequences, enabling batched processing and 
+    initial hysteron states from historical sequences, enabling batched processing and
     arbitrary mesh scaling.
 
     Parameters
     ----------
     mesh_scale : float
         The scale of the mesh for creating the Preisach model.
-    sequence_features : int, optional
+    num_past_features : int, optional
         Number of features in input sequences (typically 2 for H and B). Default is 2.
     d_model : int, optional
         Transformer model dimension. Default is 128.
     num_heads : int, optional
-        Number of transformer attention heads. Default is 8.  
+        Number of transformer attention heads. Default is 8.
     num_encoder_layers : int, optional
         Number of transformer encoder layers. Default is 4.
     hidden_dim : int
@@ -224,7 +239,7 @@ class EncoderDecoderPreisachNN(BaseModule):
         self,
         mesh_scale: float,
         *,
-        sequence_features: int = 2,
+        num_past_features: int = 2,
         d_model: int = 128,
         num_heads: int = 8,
         num_encoder_layers: int = 4,
@@ -249,7 +264,7 @@ class EncoderDecoderPreisachNN(BaseModule):
 
         self.model = EncoderDecoderPreisachNNModel(
             mesh_size=mesh_scale,
-            sequence_features=sequence_features,
+            num_past_features=num_past_features,
             d_model=d_model,
             num_heads=num_heads,
             num_encoder_layers=num_encoder_layers,
@@ -262,11 +277,12 @@ class EncoderDecoderPreisachNN(BaseModule):
             encoder_dropout=encoder_dropout,
         )
 
-        self.automatic_optimization = False
-
     def on_fit_start(self) -> None:
         self.model.base_mesh = self.model.base_mesh.to(self.device)
         return super().on_fit_start()
+
+    def on_train_epoch_start(self) -> None:
+        return
 
     def forward(
         self,
@@ -279,7 +295,7 @@ class EncoderDecoderPreisachNN(BaseModule):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.model(
             encoder_input=encoder_input,
-            decoder_input=decoder_input,
+            decoder_input=decoder_input[..., 0:1],
             encoder_mask=encoder_mask,
             y0=y0,
             temp=temp,
@@ -291,15 +307,27 @@ class EncoderDecoderPreisachNN(BaseModule):
         batch_idx: int,
     ) -> dict[str, torch.Tensor]:
         assert "target" in batch
-        
+
         encoder_input = batch["encoder_input"]  # [batch_size, ctxt_seq_len, features]
         decoder_input = batch["decoder_input"]  # [batch_size, tgt_seq_len, features]
         target = batch["target"]  # [batch_size, tgt_seq_len, 1]
-        
-        # Get encoder mask if available
-        encoder_mask = batch.get("encoder_mask")
-        if encoder_mask is not None:
-            encoder_mask = encoder_mask.bool()
+
+        # Get sequence lengths and flatten if needed
+        encoder_lengths = batch.get("encoder_lengths")
+        if encoder_lengths is not None:
+            encoder_lengths = encoder_lengths[..., 0]  # (B, 1) -> (B,)
+
+            # Create simple padding mask using TransformerTF utility
+            encoder_mask = create_mask(
+                size=encoder_input.shape[1],
+                lengths=encoder_lengths,
+                alignment="left",
+                inverse=True,  # True=valid positions, False=padded
+            )
+        else:
+            encoder_mask = batch.get("encoder_mask")
+            if encoder_mask is not None:
+                encoder_mask = encoder_mask.bool()
 
         # Get initial field from first target value
         y0 = target[:, 0, 0]  # [batch_size]
@@ -315,7 +343,6 @@ class EncoderDecoderPreisachNN(BaseModule):
         # Compute loss
         target_squeezed = target.squeeze(-1)  # [batch_size, tgt_seq_len]
         loss = mse_loss(y_hat, target_squeezed)
-        unweighted_loss = torch.nn.functional.mse_loss(y_hat, target_squeezed)
 
         return {
             "loss": loss,
@@ -323,36 +350,21 @@ class EncoderDecoderPreisachNN(BaseModule):
             "y": target_squeezed,
             "x": decoder_input.squeeze(-1),
             "density": density.detach().clone(),
-            "unweighted_loss": unweighted_loss,
         }
 
     def training_step(
         self, batch: EncoderDecoderTargetSample[torch.Tensor], batch_idx: int
-    ) -> dict[str, torch.Tensor]:
+    ) -> torch.Tensor:
         out = self.common_step(batch, batch_idx)
         loss = out["loss"]
-
-        optimizer = self.optimizers()
-        optimizer.zero_grad()
-        self.manual_backward(loss)
-        
-        # Clip gradients
-        self.clip_gradients(optimizer, gradient_clip_val=1.0)
-        optimizer.step()
-
-        # Step lr scheduler
-        scheduler = self.lr_schedulers()
-        if scheduler is not None:
-            scheduler.step()
 
         # Logging
         for tag, key in {
             "train/loss": "loss",
-            "train/mse": "unweighted_loss",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=True, on_epoch=False)
 
-        return out
+        return loss
 
     def validation_step(
         self, batch: EncoderDecoderTargetSample[torch.Tensor], batch_idx: int
@@ -392,7 +404,7 @@ class EncoderDecoderPreisachNN(BaseModule):
                 },
             ],
         )
-        
+
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer,
             step_size=self.hparams["lr_step_interval"],
