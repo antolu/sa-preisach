@@ -8,6 +8,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import torch
 from transformertf.data import TimeSeriesDataset
+from transformertf.data.dataset import EncoderDecoderDataset
 
 from ..models import (
     DifferentiablePreisach,
@@ -52,7 +53,9 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
                 log.error(msg)
             return super().on_validation_epoch_end(trainer, pl_module)
 
-        dataset = typing.cast(TimeSeriesDataset, dataloader.dataset)
+        dataset = typing.cast(
+            TimeSeriesDataset | EncoderDecoderDataset, dataloader.dataset
+        )
 
         h_transform, b_transform = list(dataset.transforms.values())
 
