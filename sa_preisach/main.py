@@ -172,7 +172,7 @@ def add_callback_defaults(parser: LightningArgumentParser) -> None:
     parser.add_lightning_class_args(
         lightning.pytorch.callbacks.RichModelSummary, "model_summary"
     )
-    parser.set_defaults({"model_summary.max_depth": 2})
+    parser.set_defaults({"model_summary.max_depth": 3})
 
 
 def main() -> None:
