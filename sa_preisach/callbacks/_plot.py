@@ -46,7 +46,7 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         if trainer.current_epoch % self.validate_every_n_epochs != 0:
             return super().on_validation_epoch_end(trainer, pl_module)
 
-        dataloader = trainer.train_dataloader
+        dataloader = trainer.val_dataloaders
         if dataloader is None:
             if trainer.global_step > 0:
                 msg = "No datamodule found"
@@ -62,6 +62,8 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         # get the last validation output
         last_output = pl_module.validation_outputs[-1]
         x = last_output["x"]
+        if x.ndim > 1 and x.shape[1] > 1:
+            x = x[..., 0]
         y = last_output["y"]
         y_hat = last_output["y_hat"]
         x = x.squeeze(0).detach().cpu()
