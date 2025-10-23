@@ -12,6 +12,7 @@ from transformertf.data import TimeSeriesDataset
 from ..models import (
     DifferentiablePreisach,
     DifferentiablePreisachNN,
+    EncoderDecoderPreisachNN,
     SelfAdaptivePreisach,
 )
 
@@ -33,7 +34,10 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
     def on_validation_epoch_end(  # type: ignore[override]
         self,
         trainer: L.Trainer,
-        pl_module: SelfAdaptivePreisach | DifferentiablePreisach,
+        pl_module: SelfAdaptivePreisach
+        | DifferentiablePreisach
+        | DifferentiablePreisachNN
+        | EncoderDecoderPreisachNN,
     ) -> None:
         if not trainer.is_global_zero:
             return super().on_validation_epoch_end(trainer, pl_module)
@@ -80,6 +84,9 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         elif isinstance(pl_module, DifferentiablePreisach | DifferentiablePreisachNN):
             alpha = pl_module.model.mesh[:, 1]
             beta = pl_module.model.mesh[:, 0]
+        elif isinstance(pl_module, EncoderDecoderPreisachNN):
+            alpha = pl_module.model.base_mesh[:, 1]
+            beta = pl_module.model.base_mesh[:, 0]
         else:
             msg = "Model not supported"
             log.error(msg)
