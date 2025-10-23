@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from ._states import sweep_up, sweep_left
+from ._states import sweep_left, sweep_up
 
 __all__ = ["get_batched_states", "initialize_batched_state"]
 
@@ -39,7 +39,7 @@ def initialize_batched_state(
     return state, field
 
 
-def get_batched_states(  # noqa: PLR0912, PLR0913
+def get_batched_states(  # noqa: PLR0913
     h: torch.Tensor,
     alpha: torch.Tensor,
     beta: torch.Tensor,
@@ -65,10 +65,10 @@ def get_batched_states(  # noqa: PLR0912, PLR0913
     beta : torch.Tensor
         Hysteron deactivation points, shape [batch_size, n_mesh_points].
     initial_states : torch.Tensor | None
-        Initial state of the hysterons, shape [batch_size, n_mesh_points]. 
+        Initial state of the hysterons, shape [batch_size, n_mesh_points].
         If None, a default negative saturation state is used.
     initial_fields : torch.Tensor | None
-        Initial field of the hysterons, shape [batch_size, 1]. 
+        Initial field of the hysterons, shape [batch_size, 1].
         If None, a default zero field is used.
     temp : float
         Temperature parameter for the hysteron switch. Higher values make the switch
@@ -127,40 +127,48 @@ def get_batched_states(  # noqa: PLR0912, PLR0913
     # Process each time step
     for t in range(seq_len):
         current_fields = h[:, t]  # [batch_size]
-        
+
         # Determine sweep direction for each batch element
         field_increase = current_fields > previous_fields  # [batch_size]
         field_decrease = current_fields < previous_fields  # [batch_size]
         field_same = ~(field_increase | field_decrease)  # [batch_size]
-        
+
         # Apply sweep_up where field increased
         if field_increase.any():
             # Expand dimensions for broadcasting: [batch_size, 1] and [batch_size, n_mesh_points]
             h_expanded = current_fields[field_increase].unsqueeze(-1)  # [n_increase, 1]
             alpha_increase = alpha[field_increase]  # [n_increase, n_mesh_points]
-            states_increase = current_states[field_increase]  # [n_increase, n_mesh_points]
-            
+            states_increase = current_states[
+                field_increase
+            ]  # [n_increase, n_mesh_points]
+
             new_states_increase = sweep_up(
-                h_expanded, alpha_increase, states_increase, temp=temp, training=training
+                h_expanded,
+                alpha_increase,
+                states_increase,
+                temp=temp,
+                training=training,
             )
             current_states[field_increase] = new_states_increase
 
-        # Apply sweep_left where field decreased  
+        # Apply sweep_left where field decreased
         if field_decrease.any():
             h_expanded = current_fields[field_decrease].unsqueeze(-1)  # [n_decrease, 1]
             beta_decrease = beta[field_decrease]  # [n_decrease, n_mesh_points]
-            states_decrease = current_states[field_decrease]  # [n_decrease, n_mesh_points]
-            
+            states_decrease = current_states[
+                field_decrease
+            ]  # [n_decrease, n_mesh_points]
+
             new_states_decrease = sweep_left(
                 h_expanded, beta_decrease, states_decrease, temp=temp, training=training
             )
             current_states[field_decrease] = new_states_decrease
 
         # States remain the same where field didn't change (field_same case is automatic)
-        
+
         # Store current states
         all_states[:, t, :] = current_states
-        
+
         # Update previous fields
         previous_fields = current_fields
 
