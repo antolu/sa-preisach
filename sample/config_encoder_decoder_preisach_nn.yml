@@ -8,46 +8,60 @@ trainer:
   enable_checkpointing: false
   enable_progress_bar: true
 
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 1e-3
+
 data:
-  class_path: sa_preisach.data.EncoderDecoderPreisachDataModule
+  class_path: transformertf.data.EncoderDecoderDataModule
   init_args:
     known_covariates: I_ref_A
     target_covariate: B_meas_T_filtered
     train_df_paths: sample_train.parquet
     val_df_paths: sample_val.parquet
     # Encoder-decoder sequence lengths
-    ctxt_seq_len: 800      # Context sequence for encoder (historical behavior)
-    tgt_seq_len: 200       # Target sequence for decoder (prediction length)
-    downsample: 50
+    ctxt_seq_len: 800 # Context sequence for encoder (historical behavior)
+    tgt_seq_len: 800 # Target sequence for decoder (prediction length)
+    downsample: 20
+    normalize: false
     target_depends_on: I_ref_A
-    batch_size: 8          # Small batch for testing
-    num_workers: 0         # Set to 0 for debugging
-    shuffle: false         # Disable for testing
+    batch_size: 4 # Single batch for debugging
+    num_workers: 0 # Set to 0 for debugging
+    shuffle: true # Disable for testing
     extra_transforms:
       B_meas_T_filtered:
         - class_path: transformertf.data.transform.DiscreteFunctionTransform
           init_args:
             xs_: calibration_fn.csv
+        - class_path: transformertf.data.transform.MinMaxScaler
+          init_args:
+            min_: 0
+            max_: 1
+      I_ref_A:
+        - class_path: transformertf.data.transform.MinMaxScaler
+          init_args:
+            min_: 0
+            max_: 1
 
 model:
   class_path: sa_preisach.models.EncoderDecoderPreisachNN
   init_args:
-    mesh_scale: 0.01
+    mesh_scale: 0.01 # Fine mesh - now supported with arbitrary scaling
     # Transformer encoder parameters
-    sequence_features: 2   # H and B features in encoder input
-    d_model: 64           # Smaller model for testing
-    num_heads: 4          # Fewer heads for testing
+    d_model: 32 # Smaller model for testing
+    num_heads: 4 # Fewer heads for testing
     num_encoder_layers: 2 # Fewer layers for testing
     encoder_dropout: 0.1
     # Preisach decoder parameters
     hidden_dim: 32
     num_layers: 2
-    temp: 1e-2
+    temp: 1e-3
     # Optimization parameters
-    lr: 1e-3
-    lr_scale: 1e-4
-    lr_step_interval: 50
-    lr_gamma: 0.95
+    # lr: 1e-3
+    # lr_scale: 1e-4
+    # lr_step_interval: 50
+    # lr_gamma: 0.95
     # Physical constraints
     m_scale_bounds: [0.0, 10.0]
     offset_bounds: [-10.0, 10.0]

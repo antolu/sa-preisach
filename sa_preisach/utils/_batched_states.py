@@ -131,7 +131,7 @@ def get_batched_states(  # noqa: PLR0913
         # Determine sweep direction for each batch element
         field_increase = current_fields > previous_fields  # [batch_size]
         field_decrease = current_fields < previous_fields  # [batch_size]
-        field_same = ~(field_increase | field_decrease)  # [batch_size]
+        ~(field_increase | field_decrease)  # [batch_size]
 
         # Apply sweep_up where field increased
         if field_increase.any():
