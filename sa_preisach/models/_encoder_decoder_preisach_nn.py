@@ -191,24 +191,35 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         alpha = mesh_coords[:, :, 1]  # [batch_size, n_mesh_points]
         beta = mesh_coords[:, :, 0]  # [batch_size, n_mesh_points]
 
-        # Process each batch element separately using get_states
+        # Move data to CPU for state computation (sequential operation)
+        # This allows NN operations to run on GPU while state updates run on CPU
+        h_cpu = h.cpu()
+        alpha_cpu = alpha.cpu()
+        beta_cpu = beta.cpu()
+        initial_states_cpu = initial_states.cpu()
+        y0_cpu = y0.cpu()
+
+        # Process each batch element separately using get_states on CPU
         # Note: torch.vmap doesn't work here due to data-dependent control flow in get_states
         batch_states = [
             get_states(
-                h=h[b],  # [tgt_seq_len]
-                alpha=alpha[b],  # [n_mesh_points]
-                beta=beta[b],  # [n_mesh_points]
-                current_state=initial_states[b],  # [n_mesh_points]
-                current_field=y0[b],  # scalar
+                h=h_cpu[b],  # [tgt_seq_len]
+                alpha=alpha_cpu[b],  # [n_mesh_points]
+                beta=beta_cpu[b],  # [n_mesh_points]
+                current_state=initial_states_cpu[b],  # [n_mesh_points]
+                current_field=y0_cpu[b],  # scalar
                 temp=temp,
                 dtype=torch.float32,
                 training=self.training,
             )
             for b in range(batch_size)
         ]
-        states = torch.stack(
+        states_cpu = torch.stack(
             batch_states, dim=0
         )  # [batch_size, tgt_seq_len, n_mesh_points]
+
+        # Move states back to original device for density computation
+        states = states_cpu.to(h.device)
 
         # Compute density weights
         density = self.density(self.base_mesh)  # [n_mesh_points, 1]
