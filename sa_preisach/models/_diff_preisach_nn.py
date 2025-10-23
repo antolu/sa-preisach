@@ -5,7 +5,6 @@ import typing
 
 import einops
 import gpytorch.constraints
-import lightning as L
 import numpy as np
 import torch
 from transformertf.data import TimeSeriesSample
@@ -245,9 +244,7 @@ class DifferentiablePreisachNN(BaseModule):
         y_hat, density, states = self(
             x, y0=y[0], temp=self.hparams["temp"], states=states
         )
-        loss1 = mse_loss(
-            y_hat, y, weight=weights if weights is not None else None
-        )
+        loss1 = mse_loss(y_hat, y, weight=weights if weights is not None else None)
         unweighted_loss = torch.nn.functional.mse_loss(y_hat, y)
 
         return {
@@ -442,12 +439,8 @@ class DifferentiablePreisachNN(BaseModule):
         mesh = torch.tensor(mesh, dtype=torch.float32, device=device)
 
         if randomize:
-            mesh[:, 0] = (
-                mesh[:, 0] + (torch.rand(mesh.shape[0], device=device) - 0.5) * 2e-2
-            )  # noqa: PLR6104
-            mesh[:, 1] = (
-                mesh[:, 1] + (torch.rand(mesh.shape[0], device=device) - 0.5) * 2e-2
-            )  # noqa: PLR6104
+            mesh[:, 0] += (torch.rand(mesh.shape[0], device=device) - 0.5) * 2e-2
+            mesh[:, 1] += (torch.rand(mesh.shape[0], device=device) - 0.5) * 2e-2
             mesh[:, 0] = torch.clamp(mesh[:, 0], min=0.0, max=1.0)
             mesh[:, 1] = torch.clamp(mesh[:, 1], min=0.0, max=1.0)
 

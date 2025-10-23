@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import typing
 import pathlib
+import typing
 
 import pandas as pd
 from transformertf.data.dataset import TimeSeriesDataset
-from transformertf.data.transform import MinMaxScaler, TransformCollection
 
 if typing.TYPE_CHECKING:
     from transformertf.data._downsample import DOWNSAMPLE_METHODS

@@ -2,7 +2,10 @@ from .._mod_replace import replace_modname
 from ._base import BaseModule
 from ._diff_preisach import DifferentiablePreisach, DifferentiablePreisachModel
 from ._diff_preisach_nn import DifferentiablePreisachNN, DifferentiablePreisachNNModel
-from ._encoder_decoder_preisach_nn import EncoderDecoderPreisachNN, EncoderDecoderPreisachNNModel
+from ._encoder_decoder_preisach_nn import (
+    EncoderDecoderPreisachNN,
+    EncoderDecoderPreisachNNModel,
+)
 from ._sa_preisach import SelfAdaptivePreisach, SelfAdaptivePreisachModel
 
 for _mod in (
