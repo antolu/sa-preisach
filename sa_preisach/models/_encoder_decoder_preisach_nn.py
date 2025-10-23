@@ -132,9 +132,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         )  # [batch_size, n_mesh_points]
 
         # Get initial field values - ensure always has batch dimension
-        y0 = (
-            encoder_input[:, -1, -1] if y0 is None else y0.squeeze(-1)
-        )  # [batch_size]
+        y0 = encoder_input[:, -1, -1] if y0 is None else y0.squeeze(-1)  # [batch_size]
 
         # Ensure y0 always has batch dimension for vmap compatibility
         if y0.dim() == 0:  # scalar case when batch_size=1
