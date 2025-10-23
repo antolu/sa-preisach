@@ -39,11 +39,14 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         mesh_density_function: typing.Literal["constant", "default", "exponential"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
         encoder_dropout: float = 0.1,
+        mesh_perturbation_std: float = 0.01,
     ) -> None:
         super().__init__()
 
+        self.mesh_perturbation_std = mesh_perturbation_std
+
         # Create base mesh (will be expanded per batch)
-        self.base_mesh = torch.from_numpy(
+        base_mesh = torch.from_numpy(
             create_triangle_mesh(
                 mesh_size,
                 mesh_density_function=mesh_density_function
@@ -51,6 +54,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
                 else make_mesh_size_function(mesh_density_function),
             )
         ).float()
+        self.register_buffer("base_mesh", base_mesh)
         self.n_mesh_points = self.base_mesh.shape[0]
 
         # Transformer encoder for generating initial states
@@ -87,6 +91,48 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             constraint=gpytorch.constraints.Interval(*offset_bounds),
         )
 
+    def _perturb_mesh(
+        self, mesh_coords: torch.Tensor, training: bool
+    ) -> torch.Tensor:
+        """
+        Perturb mesh coordinates during training for density network regularization.
+
+        Parameters
+        ----------
+        mesh_coords : torch.Tensor
+            Mesh coordinates of shape [batch_size, n_mesh_points, 2]
+            where [..., 0] is beta and [..., 1] is alpha
+        training : bool
+            Whether the model is in training mode
+
+        Returns
+        -------
+        torch.Tensor
+            Perturbed mesh coordinates with shape [batch_size, n_mesh_points, 2]
+            satisfying 0 <= alpha <= beta <= 1
+        """
+        if not training or self.mesh_perturbation_std == 0.0:
+            return mesh_coords
+
+        # Sample Gaussian noise for each (batch, mesh_point, coordinate)
+        noise = torch.randn_like(mesh_coords) * self.mesh_perturbation_std
+
+        # Add noise and clip to [0, 1]
+        perturbed = torch.clamp(mesh_coords + noise, 0.0, 1.0)
+
+        # Enforce beta >= alpha constraint
+        # mesh_coords[..., 0] is beta, mesh_coords[..., 1] is alpha
+        beta = perturbed[..., 0]
+        alpha = perturbed[..., 1]
+
+        # Where beta < alpha, set beta = alpha
+        beta = torch.maximum(beta, alpha)
+
+        # Stack back into [batch_size, n_mesh_points, 2] format
+        perturbed = torch.stack([beta, alpha], dim=-1)
+
+        return perturbed
+
     def forward(
         self,
         encoder_input: torch.Tensor,
@@ -122,7 +168,9 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         mesh_coords = self.base_mesh.unsqueeze(0).expand(
             batch_size, -1, -1
         )  # [batch_size, n_mesh_points, 2]
-        mesh_coords = mesh_coords.to(encoder_input.device)
+
+        # Perturb mesh during training for density network regularization
+        mesh_coords = self._perturb_mesh(mesh_coords, self.training)
 
         # Encode initial hysteron states from historical sequences
         initial_states = self.encoder(
@@ -253,6 +301,7 @@ class EncoderDecoderPreisachNN(BaseModule):
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
         compile_model: bool = True,
         encoder_dropout: float = 0.1,
+        mesh_perturbation_std: float = 0.01,
         n_train_samples: int = 0,
     ) -> None:
         super().__init__()
@@ -271,11 +320,8 @@ class EncoderDecoderPreisachNN(BaseModule):
             normalized_density=normalized_density,
             mesh_density_function=mesh_density_function,
             encoder_dropout=encoder_dropout,
+            mesh_perturbation_std=mesh_perturbation_std,
         )
-
-    def on_fit_start(self) -> None:
-        self.model.base_mesh = self.model.base_mesh.to(self.device)
-        return super().on_fit_start()
 
     def on_train_epoch_start(self) -> None:
         return
