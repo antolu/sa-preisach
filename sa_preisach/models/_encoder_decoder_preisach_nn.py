@@ -132,10 +132,9 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         )  # [batch_size, n_mesh_points]
 
         # Get initial field values - ensure always has batch dimension
-        if y0 is None:
-            y0 = encoder_input[:, -1, -1]  # [batch_size] last feature, last element
-        else:
-            y0 = y0.squeeze(-1)  # [batch_size]
+        y0 = (
+            encoder_input[:, -1, -1] if y0 is None else y0.squeeze(-1)
+        )  # [batch_size]
 
         # Ensure y0 always has batch dimension for vmap compatibility
         if y0.dim() == 0:  # scalar case when batch_size=1
@@ -148,16 +147,19 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
 
         # Process each batch element separately using get_states
         # Note: torch.vmap doesn't work here due to data-dependent control flow in get_states
-        batch_states = [get_states(
-                    h=h[b],  # [tgt_seq_len]
-                    alpha=alpha[b],  # [n_mesh_points]
-                    beta=beta[b],  # [n_mesh_points]
-                    current_state=initial_states[b],  # [n_mesh_points]
-                    current_field=y0[b],  # scalar
-                    temp=temp,
-                    dtype=torch.float32,
-                    training=self.training,
-                ) for b in range(batch_size)]
+        batch_states = [
+            get_states(
+                h=h[b],  # [tgt_seq_len]
+                alpha=alpha[b],  # [n_mesh_points]
+                beta=beta[b],  # [n_mesh_points]
+                current_state=initial_states[b],  # [n_mesh_points]
+                current_field=y0[b],  # scalar
+                temp=temp,
+                dtype=torch.float32,
+                training=self.training,
+            )
+            for b in range(batch_size)
+        ]
         states = torch.stack(
             batch_states, dim=0
         )  # [batch_size, tgt_seq_len, n_mesh_points]
