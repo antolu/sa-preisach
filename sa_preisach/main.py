@@ -12,14 +12,14 @@ import lightning.pytorch.cli
 import pytorch_optimizer  # noqa: F401
 import torch
 from lightning.pytorch.cli import LightningArgumentParser
+from transformertf.data.datamodule import DataModuleBase
 from transformertf.main import (
     NeptuneLoggerSaveConfigCallback,
     _FilterCallback,
     setup_logger,
 )
 
-from transformertf.data.datamodule import DataModuleBase
-from sa_preisach.data import EncoderDecoderPreisachDataModule, PreisachDataModule
+from sa_preisach.data import PreisachDataModule
 from sa_preisach.models import (  # noqa: F401
     BaseModule,
     DifferentiablePreisach,
@@ -39,7 +39,16 @@ class LightningCLI(lightning.pytorch.cli.LightningCLI):
     def __init__(self, **kwargs: typing.Any) -> None:
         super().__init__(parser_kwargs={"parser_mode": "omegaconf"}, **kwargs)
 
-        self.auto_configure_optimizers = False
+        # Dynamically set auto_configure_optimizers based on model type
+        # Models that use manual optimization should disable auto configuration
+        if (
+            hasattr(self.model, "automatic_optimization")
+            and not self.model.automatic_optimization
+        ):
+            self.auto_configure_optimizers = False
+        else:
+            # Enable auto configuration for models that use standard Lightning optimization
+            self.auto_configure_optimizers = True
 
     def before_instantiate_classes(self) -> None:
         if hasattr(self.config, "fit") and hasattr(self.config.fit, "verbose"):
