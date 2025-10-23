@@ -57,6 +57,8 @@ model:
     hidden_dim: 32
     num_layers: 2
     temp: 1e-3
+    # Mesh perturbation for density network regularization
+    mesh_perturbation_std: 0.01 # Gaussian noise std for training regularization
     # Optimization parameters
     # lr: 1e-3
     # lr_scale: 1e-4
