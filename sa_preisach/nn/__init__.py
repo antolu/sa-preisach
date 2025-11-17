@@ -2,6 +2,7 @@ from .._mod_replace import replace_modname
 from ._binary_parameter import BinaryParameter
 from ._constrained_parameter import ConstrainedParameter
 from ._gpy_constrained_parameter import GPyConstrainedParameter
+from ._preisach_lstm_encoder import PreisachLSTMEncoder
 from ._preisach_transformer_encoder import PreisachTransformerEncoder
 from ._resnet import ResNetMLP
 
@@ -9,6 +10,7 @@ for _mod in (
     BinaryParameter,
     ConstrainedParameter,
     GPyConstrainedParameter,
+    PreisachLSTMEncoder,
     PreisachTransformerEncoder,
     ResNetMLP,
 ):
@@ -21,6 +23,7 @@ __all__ = [
     "BinaryParameter",
     "ConstrainedParameter",
     "GPyConstrainedParameter",
+    "PreisachLSTMEncoder",
     "PreisachTransformerEncoder",
     "ResNetMLP",
 ]
