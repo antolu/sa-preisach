@@ -55,23 +55,28 @@ The saved checkpoint can be loaded for inference:
 ```python
 import torch
 from sa_preisach.models import DifferentiablePreisach
+from transformertf.data import TimeSeriesDataModule  # use EncoderDecoderDataModule for PreisachNN model
 
 model = DifferentiablePreisach.load_from_checkpoint("path/to/checkpoint.ckpt")
 model.eval()
+
+# Load datamodule from checkpoint to access transforms
+datamodule = TimeSeriesDataModule.load_from_checkpoint("path/to/checkpoint.ckpt")
 
 # Single sequence inference (uses negative saturation as initial state)
 h = torch.tensor([0.0, 1.0, 0.5, 0.2, 0.0])  # Current sequence (normalized to [0, 1])
 y_hat = model(h)
 
 # Batched inference with state persistence
-h_sequences = [...]  # List of sequences
 states: torch.Tensor | None = None
 
 predictions = []
-for h in h_sequences:
-    y, states = model(h, states=states)
+for batch in datamodule.val_dataloader():
+    y, states = model(batch["input"], states=states)
     predictions.append(y)
 
-# To inverse transform predictions to original space, you need to load the transforms
-# from the data module configuration used during training
+predictions = torch.cat(predictions, dim=1) # Concatenate along the time dimension
+
+# Inverse transform predictions to original space
+predictions_original = datamodule.target_transform.inverse_transform(predictions)
 ```

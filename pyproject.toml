@@ -4,7 +4,7 @@ dependencies = [
   "numpy >= 1.26, < 2.0",
   "pandas >= 2.0, < 3.0",
   "torch >= 2.5.1, < 3.0",
-  "transformertf >= 0.9.3",
+  "transformertf >= 0.13",
   "lightning >= 2.2.2, < 3.0",
   "pygmsh >= 7.0.0",
 ]

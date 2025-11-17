@@ -12,6 +12,7 @@ import lightning.pytorch.cli
 import pytorch_optimizer  # noqa: F401
 import torch
 from lightning.pytorch.cli import LightningArgumentParser
+from transformertf.data.datamodule import DataModuleBase
 from transformertf.main import (
     NeptuneLoggerSaveConfigCallback,
     _FilterCallback,
@@ -22,6 +23,7 @@ from sa_preisach.data import PreisachDataModule
 from sa_preisach.models import (  # noqa: F401
     BaseModule,
     DifferentiablePreisach,
+    EncoderDecoderPreisachNN,
     SelfAdaptivePreisach,
 )
 
@@ -37,11 +39,16 @@ class LightningCLI(lightning.pytorch.cli.LightningCLI):
     def __init__(self, **kwargs: typing.Any) -> None:
         super().__init__(parser_kwargs={"parser_mode": "omegaconf"}, **kwargs)
 
-        self.auto_configure_optimizers = False
-
     def before_instantiate_classes(self) -> None:
         if hasattr(self.config, "fit") and hasattr(self.config.fit, "verbose"):
             setup_logger(self.config.fit.verbose)
+
+        if hasattr(self.config, "fit") and hasattr(
+            self.config.fit, "no_auto_configure_optimizers"
+        ):
+            self.auto_configure_optimizers = (
+                not self.config.fit.no_auto_configure_optimizers
+            )
 
     def add_arguments_to_parser(self, parser: LightningArgumentParser) -> None:
         parser.add_argument(
@@ -61,11 +68,45 @@ class LightningCLI(lightning.pytorch.cli.LightningCLI):
             help="Name of the experiment.",
         )
 
+        parser.add_argument(
+            "--transfer-ckpt",
+            dest="transfer_ckpt",
+            type=str,
+            default=None,
+            help="Path to checkpoint for transfer learning (loads with strict=False)",
+        )
+
+        parser.add_argument(
+            "--no-auto-configure-optimizers",
+            action="store_true",
+            dest="no_auto_configure_optimizers",
+            help="Do not auto-configure optimizers.",
+        )
+
         add_trainer_defaults(parser)
 
         add_callback_defaults(parser)
 
+        parser.link_arguments(
+            "data.n_train_samples",
+            "model.init_args.n_train_samples",
+            apply_on="instantiate",
+        )
+
     def before_fit(self) -> None:  # noqa: PLR0912
+        if (
+            hasattr(self.config, "fit")
+            and hasattr(self.config.fit, "transfer_ckpt")
+            and self.config.fit.transfer_ckpt is not None
+        ):
+            transfer_ckpt = os.fspath(
+                pathlib.Path(self.config.fit.transfer_ckpt).expanduser()
+            )
+            state_dict = torch.load(
+                transfer_ckpt, map_location="cpu", weights_only=False
+            )
+            self.model.load_state_dict(state_dict["state_dict"], strict=False)
+
         # hijack model checkpoint callbacks to save to checkpoint_dir/version_{version}
         if (
             hasattr(self.config, "fit")
@@ -155,16 +196,17 @@ def add_callback_defaults(parser: LightningArgumentParser) -> None:
     parser.add_lightning_class_args(
         lightning.pytorch.callbacks.RichModelSummary, "model_summary"
     )
-    parser.set_defaults({"model_summary.max_depth": 2})
+    parser.set_defaults({"model_summary.max_depth": 3})
 
 
 def main() -> None:
     torch.set_float32_matmul_precision("high")
     LightningCLI(
         model_class=BaseModule,
-        datamodule_class=PreisachDataModule,
+        datamodule_class=DataModuleBase,
         save_config_kwargs={"overwrite": True},
         subclass_mode_model=True,
+        subclass_mode_data=True,
     )
 
 
