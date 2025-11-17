@@ -5,23 +5,36 @@ To get started, run `pip install -e . --config-settings editable_mode=compat`
 
 Documentation available on [Acc-Py docserver](https://acc-py.web.cern.ch/gitlab/dsb/hysteresis/sa-preisach/docs/stable).
 
-This package implements [Differentiable Preisach](https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.128.204801) by R.Roussel et al., and a novel Self-Adaptive Differentiable Preisach model using PyTorch Lightning.
+This package implements [Differentiable Preisach](https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.128.204801) by R.Roussel et al., a Self-Adaptive Differentiable Preisach model, and an Encoder-Decoder Neural Network variant using PyTorch Lightning.
 
 LightningCLI allows users to fit a model without writing any code, but just by using a YAML configuration file, see documentation [here](https://lightning.ai/docs/pytorch/stable/cli/lightning_cli.html).
 
 
 ## Usage
 
-We provide sample configs for both the original and self-adaptive models in the [sample](sample) directory with training data.
+We provide sample configs for the Differentiable Preisach, Self-Adaptive Preisach, and Encoder-Decoder variants in the [sample](sample) directory with training data.
 
-### Differentiable Preisach model
+### Training Models
 
 To train the original Differentiable Preisach model (after installing the package):
 
 ```bash
 cd sample
-
 sa_preisach fit -c config_diff_preisach.yml
+```
+
+To train the neural network enhanced Differentiable Preisach model:
+
+```bash
+cd sample
+sa_preisach fit -c config_diff_preisach_nn.yml
+```
+
+To train the Encoder-Decoder Preisach model with manual optimization:
+
+```bash
+cd sample
+sa_preisach fit -c config_encoder_decoder_preisach_nn.yml --no-auto-configure-optimizers
 ```
 
 If you want to log to Tensorboard, add the logger to the configuration file:
@@ -35,42 +48,30 @@ trainer:
       name: my_model
 ```
 
-The saved checkpoint can be loaded in, and inference can be done using the saved checkpoint directly:
+### Inference
+
+The saved checkpoint can be loaded for inference:
 
 ```python
-import pandas as pd
+import torch
 from sa_preisach.models import DifferentiablePreisach
-from sa_preisach.data import PreisachDataModule
 
 model = DifferentiablePreisach.load_from_checkpoint("path/to/checkpoint.ckpt")
 model.eval()
 
-datamodule = PreisachDataModule.load_from_checkpoint("path/to/checkpoint.ckpt")
+# Single sequence inference (uses negative saturation as initial state)
+h = torch.tensor([0.0, 1.0, 0.5, 0.2, 0.0])  # Current sequence (normalized to [0, 1])
+y_hat = model(h)
 
-df = pd.read_parquet("path/to/test_data.parquet")
-
-dataloader = datamodule.make_dataloader(df, batch_size=1)
-
-y_hat = model(dataloader.dataset[0]["x"].squeeze(0).squeeze(-1))
-```
-
-This uses a magnetic state in negative saturation. For batched inference, you can use the following:
-
-```python
+# Batched inference with state persistence
+h_sequences = [...]  # List of sequences
 states: torch.Tensor | None = None
 
-out = []
-for batch in dataloader:
-    x = batch["x"].squeeze(0).squeeze(-1)
+predictions = []
+for h in h_sequences:
+    y, states = model(h, states=states)
+    predictions.append(y)
 
-    y, states = model(x, states=states)
-    out.append(y)
-
-out = torch.cat(out, dim=0)
-```
-
-To inverse transform your prediction into the original space, you can use the following:
-
-```python
-inverse_transformed = datamodule.target_transform.inverse_transform(out)
+# To inverse transform predictions to original space, you need to load the transforms
+# from the data module configuration used during training
 ```
