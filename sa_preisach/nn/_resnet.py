@@ -41,7 +41,9 @@ class ResNetMLP(torch.nn.Module):
         for i in range(0, len(self.residual_layers), 4):
             residual = x if i != 0 else 0.0
             x = self.residual_layers[i](x)
-            x = x.transpose(1, 2)  # swap sequence and feature dimension normalize per feature
+            x = x.transpose(
+                1, 2
+            )  # swap sequence and feature dimension normalize per feature
             x = self.residual_layers[i + 1](x)
             x = x.transpose(1, 2)
             x = self.residual_layers[i + 2](x)

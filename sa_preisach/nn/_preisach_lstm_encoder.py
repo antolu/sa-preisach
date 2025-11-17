@@ -33,7 +33,7 @@ class PreisachLSTMEncoder(torch.nn.Module):
             output_dim=hidden_dim,
             context_dim=None,
             dropout=dropout,
-            activation="lrelu"
+            activation="lrelu",
         )
 
         self.state_grn = GRN(

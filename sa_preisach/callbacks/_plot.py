@@ -36,7 +36,7 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         self.plot_training = plot_training
         self.train_plot_interval = train_plot_interval
 
-    def on_validation_epoch_end(  # type: ignore[override]
+    def on_validation_epoch_end(  # type: ignore[override]  # noqa: PLR0915
         self,
         trainer: L.Trainer,
         pl_module: SelfAdaptivePreisach
@@ -126,7 +126,9 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
                 initial_states,
             )
 
-            self._log_figure(trainer, fig_initial_states, tag="validation/initial_states")
+            self._log_figure(
+                trainer, fig_initial_states, tag="validation/initial_states"
+            )
             plt.close(fig_initial_states)
 
         if self.hysteron_scatter:
