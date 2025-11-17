@@ -39,20 +39,16 @@ class LightningCLI(lightning.pytorch.cli.LightningCLI):
     def __init__(self, **kwargs: typing.Any) -> None:
         super().__init__(parser_kwargs={"parser_mode": "omegaconf"}, **kwargs)
 
-        # Dynamically set auto_configure_optimizers based on model type
-        # Models that use manual optimization should disable auto configuration
-        if (
-            hasattr(self.model, "automatic_optimization")
-            and not self.model.automatic_optimization
-        ):
-            self.auto_configure_optimizers = False
-        else:
-            # Enable auto configuration for models that use standard Lightning optimization
-            self.auto_configure_optimizers = True
-
     def before_instantiate_classes(self) -> None:
         if hasattr(self.config, "fit") and hasattr(self.config.fit, "verbose"):
             setup_logger(self.config.fit.verbose)
+
+        if hasattr(self.config, "fit") and hasattr(
+            self.config.fit, "no_auto_configure_optimizers"
+        ):
+            self.auto_configure_optimizers = (
+                not self.config.fit.no_auto_configure_optimizers
+            )
 
     def add_arguments_to_parser(self, parser: LightningArgumentParser) -> None:
         parser.add_argument(
@@ -72,6 +68,21 @@ class LightningCLI(lightning.pytorch.cli.LightningCLI):
             help="Name of the experiment.",
         )
 
+        parser.add_argument(
+            "--transfer-ckpt",
+            dest="transfer_ckpt",
+            type=str,
+            default=None,
+            help="Path to checkpoint for transfer learning (loads with strict=False)",
+        )
+
+        parser.add_argument(
+            "--no-auto-configure-optimizers",
+            action="store_true",
+            dest="no_auto_configure_optimizers",
+            help="Do not auto-configure optimizers.",
+        )
+
         add_trainer_defaults(parser)
 
         add_callback_defaults(parser)
@@ -83,6 +94,19 @@ class LightningCLI(lightning.pytorch.cli.LightningCLI):
         )
 
     def before_fit(self) -> None:  # noqa: PLR0912
+        if (
+            hasattr(self.config, "fit")
+            and hasattr(self.config.fit, "transfer_ckpt")
+            and self.config.fit.transfer_ckpt is not None
+        ):
+            transfer_ckpt = os.fspath(
+                pathlib.Path(self.config.fit.transfer_ckpt).expanduser()
+            )
+            state_dict = torch.load(
+                transfer_ckpt, map_location="cpu", weights_only=False
+            )
+            self.model.load_state_dict(state_dict["state_dict"], strict=False)
+
         # hijack model checkpoint callbacks to save to checkpoint_dir/version_{version}
         if (
             hasattr(self.config, "fit")
