@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import typing
+import matplotlib.pyplot as plt
 
 import einops
 import gpytorch.constraints
@@ -11,7 +13,9 @@ from transformertf.data import EncoderDecoderTargetSample
 from transformertf.models._base_transformer import create_mask
 from transformertf.nn.functional import mse_loss
 
-from ..nn import GPyConstrainedParameter, PreisachTransformerEncoder, ResNetMLP
+log = logging.getLogger(__name__)
+
+from ..nn import GPyConstrainedParameter, PreisachLSTMEncoder, ResNetMLP
 from ..utils import (
     create_triangle_mesh,
     get_states,
@@ -31,6 +35,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         d_model: int = 128,
         num_heads: int = 8,
         num_encoder_layers: int = 4,
+        encoder_hidden_dim: int | None = None,
         hidden_dim: int,
         num_layers: int = 3,
         m_scale_bounds: tuple[float, float] = (0.0, 10.0),
@@ -57,14 +62,13 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         self.register_buffer("base_mesh", base_mesh)
         self.n_mesh_points = self.base_mesh.shape[0]
 
-        # Transformer encoder for generating initial states
-        self.encoder = PreisachTransformerEncoder(
+        # LSTM encoder for generating initial states
+        encoder_hdim = encoder_hidden_dim if encoder_hidden_dim is not None else hidden_dim
+        self.encoder = PreisachLSTMEncoder(
             num_features=num_past_features,
-            d_model=d_model,
-            num_heads=num_heads,
+            hidden_dim=encoder_hdim,
             num_layers=num_encoder_layers,
             dropout=encoder_dropout,
-            dim_feedforward=hidden_dim,
         )
 
         # Density network (same as original model)
@@ -77,10 +81,16 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             dropout=0.1,
         )
         self.density_activation = (
-            torch.nn.Sigmoid() if normalized_density else torch.nn.LeakyReLU()
+            torch.nn.Sigmoid() if normalized_density else torch.nn.Softplus()
         )
 
-        # Scale and offset parameters (same as original model)
+        # Separate scale parameters for H (applied field) and M (magnetization)
+        # B = h_scale * H + m_scale * M + offset
+        self.h_scale = GPyConstrainedParameter(
+            torch.tensor(0.0),
+            constraint=gpytorch.constraints.Interval(*m_scale_bounds),
+            requires_grad=False,
+        )
         self.m_scale = GPyConstrainedParameter(
             torch.tensor(1.0),
             constraint=gpytorch.constraints.Interval(*m_scale_bounds),
@@ -89,6 +99,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         self.m_offset = GPyConstrainedParameter(
             torch.tensor(0.0),
             constraint=gpytorch.constraints.Interval(*offset_bounds),
+            requires_grad=True,
         )
 
     def _perturb_mesh(
@@ -120,13 +131,13 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         # Add noise and clip to [0, 1]
         perturbed = torch.clamp(mesh_coords + noise, 0.0, 1.0)
 
-        # Enforce beta >= alpha constraint
+        # Enforce beta <= alpha constraint
         # mesh_coords[..., 0] is beta, mesh_coords[..., 1] is alpha
         beta = perturbed[..., 0]
         alpha = perturbed[..., 1]
 
-        # Where beta < alpha, set beta = alpha
-        beta = torch.maximum(beta, alpha)
+        # Where beta > alpha, set beta = alpha
+        beta = torch.minimum(beta, alpha)
 
         # Stack back into [batch_size, n_mesh_points, 2] format
         perturbed = torch.stack([beta, alpha], dim=-1)
@@ -141,7 +152,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         y0: torch.Tensor | None = None,
         *,
         temp: float = 1e-3,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass of the encoder-decoder Preisach model.
 
@@ -158,11 +169,10 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
 
         Returns
         -------
-        tuple[torch.Tensor, torch.Tensor]
-            Magnetization predictions [batch_size, tgt_seq_len] and density weights [batch_size, n_mesh_points]
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+            Magnetization predictions [batch_size, tgt_seq_len], density weights [batch_size, n_mesh_points], and normalized density weights [batch_size, n_mesh_points]
         """
         batch_size = encoder_input.shape[0]
-        decoder_input.shape[1]
 
         # Expand mesh coordinates for batch
         mesh_coords = self.base_mesh.unsqueeze(0).expand(
@@ -172,10 +182,18 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         # Perturb mesh during training for density network regularization
         mesh_coords = self._perturb_mesh(mesh_coords, self.training)
 
+        # Compute density weights first
+        density = self.density(mesh_coords)  # [batch_size, n_mesh_points, 1]
+        density = self.density_activation(density)
+        density_squeezed = density.squeeze(-1)  # [batch_size, n_mesh_points]
+
+        # Concatenate density to mesh coordinates for encoder
+        mesh_coords_with_density = torch.cat([mesh_coords, density], dim=-1)  # [batch_size, n_mesh_points, 3]
+
         # Encode initial hysteron states from historical sequences
         initial_states = self.encoder(
             sequence=encoder_input,
-            mesh_coords=mesh_coords,
+            mesh_coords=mesh_coords_with_density,
             sequence_mask=encoder_mask,
         )  # [batch_size, n_mesh_points]
 
@@ -188,8 +206,8 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
 
         # Compute hysteron states for decoder sequence
         h = decoder_input.squeeze(-1)  # [batch_size, tgt_seq_len]
-        alpha = mesh_coords[:, :, 1]  # [batch_size, n_mesh_points]
-        beta = mesh_coords[:, :, 0]  # [batch_size, n_mesh_points]
+        alpha = mesh_coords[..., 1]  # [batch_size, n_mesh_points]
+        beta = mesh_coords[..., 0]  # [batch_size, n_mesh_points]
 
         # Move data to CPU for state computation (sequential operation)
         # This allows NN operations to run on GPU while state updates run on CPU
@@ -218,24 +236,19 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             batch_states, dim=0
         )  # [batch_size, tgt_seq_len, n_mesh_points]
 
-        # Move states back to original device for density computation
+        # Move states back to original device
         states = states_cpu.to(h.device)
 
-        # Compute density weights
-        density = self.density(self.base_mesh)  # [n_mesh_points, 1]
-        density = self.density_activation(density)
-        density = einops.rearrange(density, "n 1 -> 1 n")  # [1, n_mesh_points]
-        density = density.expand(batch_size, -1)  # [batch_size, n_mesh_points]
+        # Normalize density once (constant across time)
+        density_sum = density_squeezed.sum(dim=-1, keepdim=True)  # [batch_size, 1]
 
         # Compute magnetization for each time step
-        m = torch.sum(density.unsqueeze(1) * states, dim=-1) / torch.sum(
-            density.unsqueeze(1), dim=-1
-        )  # [batch_size, tgt_seq_len]
+        m = torch.sum(density_squeezed.unsqueeze(1) * states, dim=-1) / density_sum  # [batch_size, tgt_seq_len]
 
-        # Apply scale and offset
-        m_out = self.m_scale.value * m + self.m_offset.value
+        # Apply physics-informed scaling: B = h_scale * H + m_scale * M + offset
+        b_out = self.h_scale.value * h + self.m_scale.value * m + self.m_offset.value
 
-        return m_out, density
+        return b_out, density_squeezed, m, initial_states, mesh_coords  # Return B, density, unscaled M, initial states, and mesh coords
 
 
 class EncoderDecoderPreisachNN(BaseModule):
@@ -298,6 +311,7 @@ class EncoderDecoderPreisachNN(BaseModule):
         d_model: int = 128,
         num_heads: int = 8,
         num_encoder_layers: int = 4,
+        encoder_hidden_dim: int | None = None,
         hidden_dim: int,
         num_layers: int = 3,
         temp: float = 1e-3,
@@ -313,6 +327,10 @@ class EncoderDecoderPreisachNN(BaseModule):
         compile_model: bool = True,
         encoder_dropout: float = 0.1,
         mesh_perturbation_std: float = 0.01,
+        linear_fit_steps: int = 0,
+        encoder_fit_steps: int = 0,
+        density_fit_steps: int = 0,
+        gradient_clip_val: float = 1.0,
         n_train_samples: int = 0,
     ) -> None:
         super().__init__()
@@ -324,6 +342,7 @@ class EncoderDecoderPreisachNN(BaseModule):
             d_model=d_model,
             num_heads=num_heads,
             num_encoder_layers=num_encoder_layers,
+            encoder_hidden_dim=encoder_hidden_dim,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
             m_scale_bounds=m_scale_bounds,
@@ -333,6 +352,75 @@ class EncoderDecoderPreisachNN(BaseModule):
             encoder_dropout=encoder_dropout,
             mesh_perturbation_std=mesh_perturbation_std,
         )
+
+        self._scale_offset_initialized = False
+        self.automatic_optimization = False
+
+    def on_fit_start(self) -> None:
+        log.info(f"Number of mesh points: {self.model.n_mesh_points}")
+
+
+    def _initialize_scale_offset(
+        self, m: torch.Tensor, target: torch.Tensor
+    ) -> None:
+        """
+        Analytically initialize m_scale and m_offset using least squares fit.
+
+        Given target = scale * m + offset, we solve for scale and offset:
+        - scale = cov(target, m) / var(m)
+        - offset = mean(target) - scale * mean(m)
+
+        Parameters
+        ----------
+        m : torch.Tensor
+            Raw magnetization output before scaling
+        target : torch.Tensor
+            Target magnetization values
+        """
+        with torch.no_grad():
+            # Flatten to 1D for statistics
+            m_flat = m.flatten()
+            target_flat = target.flatten()
+
+            # Compute means
+            m_mean = m_flat.mean()
+            target_mean = target_flat.mean()
+
+            # Compute scale: cov(target, m) / var(m)
+            m_centered = m_flat - m_mean
+            target_centered = target_flat - target_mean
+
+            covariance = (m_centered * target_centered).sum()
+            variance = (m_centered**2).sum()
+
+            # Avoid division by zero
+            if variance > 1e-6:
+                scale = covariance / variance
+                offset = target_mean - scale * m_mean
+
+                # Clamp to valid bounds
+                scale = torch.clamp(
+                    scale,
+                    torch.tensor(self.hparams["m_scale_bounds"][0]),
+                    torch.tensor(self.hparams["m_scale_bounds"][1]),
+                )
+                offset = torch.clamp(
+                    offset,
+                    torch.tensor(self.hparams["offset_bounds"][0]),
+                    torch.tensor(self.hparams["offset_bounds"][1]),
+                )
+
+                # Initialize parameters using inverse transform
+                self.model.m_scale.raw_parameter.data = self.model.m_scale.inverse(
+                    scale.to(self.model.m_scale.raw_parameter.device)
+                )
+                self.model.m_offset.raw_parameter.data = self.model.m_offset.inverse(
+                    offset.to(self.model.m_offset.raw_parameter.device)
+                )
+
+                log.info(
+                    f"Initialized m_scale={scale.item():.4f}, m_offset={offset.item():.4f}"
+                )
 
     def on_train_epoch_start(self) -> None:
         return
@@ -345,7 +433,7 @@ class EncoderDecoderPreisachNN(BaseModule):
         y0: torch.Tensor | None = None,
         *,
         temp: float = 1e-3,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.model(
             encoder_input=encoder_input,
             decoder_input=decoder_input[..., 0:1],
@@ -382,20 +470,32 @@ class EncoderDecoderPreisachNN(BaseModule):
             if encoder_mask is not None:
                 encoder_mask = encoder_mask.bool()
 
-        # Get initial field from first target value
-        y0 = target[:, 0, 0]  # [batch_size]
-
-        y_hat, density = self(
+        # Get initial field from last encoder value (y0=None lets model use encoder_input[:, -1, -1])
+        y_hat, density, m_unscaled, initial_states, mesh_coords = self(
             encoder_input=encoder_input,
             decoder_input=decoder_input,
             encoder_mask=encoder_mask,
-            y0=y0,
+            y0=None,
             temp=self.hparams["temp"],
         )
 
+        if self.training and not self._scale_offset_initialized:
+            target_squeezed = target.squeeze(-1)
+            self._initialize_scale_offset(m_unscaled, target_squeezed)
+            self._scale_offset_initialized = True
+
         # Compute loss
         target_squeezed = target.squeeze(-1)  # [batch_size, tgt_seq_len]
-        loss = mse_loss(y_hat, target_squeezed)
+
+        # During encoder-only fitting, only compute loss on first timestep
+        step = self.global_step if self.training else float('inf')
+        phase1_end = self.hparams["linear_fit_steps"]
+        phase2_end = phase1_end + self.hparams["encoder_fit_steps"]
+
+        if step >= phase1_end and step < phase2_end:
+            loss = mse_loss(y_hat[:, 0], target_squeezed[:, 0])
+        else:
+            loss = mse_loss(y_hat, target_squeezed)
 
         return {
             "loss": loss,
@@ -403,19 +503,84 @@ class EncoderDecoderPreisachNN(BaseModule):
             "y": target_squeezed,
             "x": decoder_input.squeeze(-1),
             "density": density.detach().clone(),
+            "initial_states": initial_states.detach().clone(),
+            "mesh_coords": mesh_coords.detach().clone(),
         }
 
     def training_step(
         self, batch: EncoderDecoderTargetSample[torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
+        optimizer_encoder, optimizer_density, optimizer_offset, optimizer_m_scale = self.optimizers()
+
         out = self.common_step(batch, batch_idx)
         loss = out["loss"]
 
-        # Logging
+        step = self.global_step
+        phase1_end = self.hparams["linear_fit_steps"]
+        phase2_end = phase1_end + self.hparams["encoder_fit_steps"]
+        phase3_end = phase2_end + self.hparams["density_fit_steps"]
+
+        optimizer_encoder.zero_grad()
+        optimizer_density.zero_grad()
+        optimizer_offset.zero_grad()
+        optimizer_m_scale.zero_grad()
+
+        self.manual_backward(loss)
+
+        if step < phase1_end:
+            optimizer_m_scale.step()
+            optimizer_offset.step()
+        elif step < phase2_end:
+            self.clip_gradients(optimizer_encoder, gradient_clip_val=self.hparams["gradient_clip_val"])
+            optimizer_encoder.step()
+        elif step < phase3_end:
+            optimizer_m_scale.step()
+            optimizer_offset.step()
+            self.clip_gradients(optimizer_density, gradient_clip_val=self.hparams["gradient_clip_val"])
+            optimizer_density.step()
+        else:
+            optimizer_m_scale.step()
+            optimizer_offset.step()
+            if step == phase3_end:
+                for param_group in optimizer_m_scale.param_groups:
+                    param_group['lr'] /= 10.0
+                for param_group in optimizer_offset.param_groups:
+                    param_group['lr'] /= 10.0
+
+            step_offset = step - phase3_end
+            cycle_position = step_offset % 3
+
+            if cycle_position == 0:
+                pass
+            elif cycle_position == 1:
+                self.clip_gradients(optimizer_encoder, gradient_clip_val=self.hparams["gradient_clip_val"])
+                optimizer_encoder.step()
+            else:
+                self.clip_gradients(optimizer_density, gradient_clip_val=self.hparams["gradient_clip_val"])
+                optimizer_density.step()
+
+        if self.trainer.is_last_batch:
+            scheduler_encoder, scheduler_density, scheduler_offset, scheduler_m_scale = self.lr_schedulers()
+            scheduler_m_scale.step()
+            scheduler_offset.step()
+            if step < phase1_end:
+                pass
+            elif step < phase2_end:
+                scheduler_encoder.step()
+            elif step < phase3_end:
+                scheduler_density.step()
+            else:
+                scheduler_encoder.step()
+                scheduler_density.step()
+
         for tag, key in {
             "train/loss": "loss",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=True, on_epoch=False)
+
+        self.log("train/h_scale", self.model.h_scale.value, on_step=True, on_epoch=False)
+        self.log("train/m_scale", self.model.m_scale.value, on_step=True, on_epoch=False)
+        self.log("train/m_offset", self.model.m_offset.value, on_step=True, on_epoch=False)
 
         return loss
 
@@ -434,34 +599,62 @@ class EncoderDecoderPreisachNN(BaseModule):
 
     def configure_optimizers(
         self,
-    ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler]:
-        optimizer = torch.optim.AdamW(
+    ) -> tuple[list[torch.optim.Optimizer], list[torch.optim.lr_scheduler.LRScheduler]]:
+        optimizer_encoder = torch.optim.AdamW(
             [
                 {
                     "params": self.model.encoder.parameters(),
                     "lr": self.hparams["lr"],
                     "weight_decay": 1e-4,
                 },
+            ],
+        )
+
+        optimizer_density = torch.optim.AdamW(
+            [
                 {
                     "params": self.model.density.parameters(),
                     "lr": self.hparams["lr"],
                     "weight_decay": 1e-4,
                 },
-                {
-                    "params": itertools.chain(
-                        self.model.m_scale.parameters(),
-                        self.model.m_offset.parameters(),
-                    ),
-                    "lr": self.hparams["lr_scale"],
-                    "weight_decay": 0.0,
-                },
             ],
         )
 
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer,
+        optimizer_offset = torch.optim.AdamW(
+            [
+                {"params": self.model.h_scale.parameters()},
+                {"params": self.model.m_offset.parameters()},
+            ],
+            lr=self.hparams["lr_scale"],
+        )
+
+        optimizer_m_scale = torch.optim.AdamW(
+            [{"params": self.model.m_scale.parameters()}],
+            lr=self.hparams["lr_scale"],
+        )
+
+        scheduler_encoder = torch.optim.lr_scheduler.StepLR(
+            optimizer_encoder,
             step_size=self.hparams["lr_step_interval"],
             gamma=self.hparams["lr_gamma"],
         )
 
-        return optimizer, scheduler
+        scheduler_density = torch.optim.lr_scheduler.StepLR(
+            optimizer_density,
+            step_size=self.hparams["lr_step_interval"],
+            gamma=self.hparams["lr_gamma"],
+        )
+
+        scheduler_offset = torch.optim.lr_scheduler.StepLR(
+            optimizer_offset,
+            step_size=self.hparams["lr_step_interval"],
+            gamma=self.hparams["lr_gamma"],
+        )
+
+        scheduler_m_scale = torch.optim.lr_scheduler.StepLR(
+            optimizer_m_scale,
+            step_size=self.hparams["lr_step_interval"],
+            gamma=self.hparams["lr_gamma"],
+        )
+
+        return [optimizer_encoder, optimizer_density, optimizer_offset, optimizer_m_scale], [scheduler_encoder, scheduler_density, scheduler_offset, scheduler_m_scale]
