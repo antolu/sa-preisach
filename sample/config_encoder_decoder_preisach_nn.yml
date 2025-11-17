@@ -1,17 +1,20 @@
+seed_everything: null
 trainer:
   accelerator: cpu
   max_epochs: 100
-  min_epochs: 10
-  check_val_every_n_epoch: 1
+  min_epochs: 5
+  val_check_interval: 0.1
   log_every_n_steps: 1
   devices: 1
+  gradient_clip_val: null
   enable_checkpointing: false
   enable_progress_bar: true
-
-optimizer:
-  class_path: torch.optim.AdamW
-  init_args:
-    lr: 1e-3
+  callbacks:
+    - class_path: sa_preisach.callbacks.PlotHysteresisCallback
+      init_args:
+        plot_training: True
+        train_plot_interval: 100
+    - class_path: transformertf.callbacks.SetOptimizerLRCallback
 
 data:
   class_path: transformertf.data.EncoderDecoderDataModule
@@ -21,12 +24,12 @@ data:
     train_df_paths: sample_train.parquet
     val_df_paths: sample_val.parquet
     # Encoder-decoder sequence lengths
-    ctxt_seq_len: 800 # Context sequence for encoder (historical behavior)
-    tgt_seq_len: 800 # Target sequence for decoder (prediction length)
+    ctxt_seq_len: 200 # Context sequence for encoder (historical behavior)
+    tgt_seq_len: 100 # Target sequence for decoder (prediction length)
     downsample: 20
-    normalize: false
+    normalize: false # normalize with scalers below in extra_transforms
     target_depends_on: I_ref_A
-    batch_size: 4 # Single batch for debugging
+    batch_size: 64 # Single batch for debugging
     num_workers: 0 # Set to 0 for debugging
     shuffle: true # Disable for testing
     extra_transforms:
@@ -47,25 +50,24 @@ data:
 model:
   class_path: sa_preisach.models.EncoderDecoderPreisachNN
   init_args:
-    mesh_scale: 0.01 # Fine mesh - now supported with arbitrary scaling
-    # Transformer encoder parameters
-    d_model: 32 # Smaller model for testing
-    num_heads: 4 # Fewer heads for testing
-    num_encoder_layers: 2 # Fewer layers for testing
+    mesh_scale: 0.01
+    mesh_density_function: exponential
+    mesh_perturbation_std: 0.005
+    encoder_hidden_dim: 16
+    num_encoder_layers: 2
     encoder_dropout: 0.1
-    # Preisach decoder parameters
-    hidden_dim: 32
     num_layers: 2
-    temp: 1e-3
-    # Mesh perturbation for density network regularization
-    mesh_perturbation_std: 0.01 # Gaussian noise std for training regularization
-    # Optimization parameters
-    # lr: 1e-3
-    # lr_scale: 1e-4
-    # lr_step_interval: 50
-    # lr_gamma: 0.95
-    # Physical constraints
+    hidden_dim: 16
+    temp: 1e-2
+    lr: 1e-3
+    lr_scale: 1e-2
+    lr_step_interval: 10
     m_scale_bounds: [0.0, 10.0]
     offset_bounds: [-10.0, 10.0]
-    normalized_density: true
+    normalized_density: false
     compile_model: false
+    linear_fit_steps: 50
+    encoder_fit_steps: 1000
+    density_fit_steps: 500
+    gradient_clip_val: 1.0
+no_auto_configure_optimizers: true # VERY IMPORTANT FOR ALLOWING MULTIPLE OPTIMIZERS
