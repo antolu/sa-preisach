@@ -314,7 +314,7 @@ def overlap_penalty_loss(
     dists = torch.norm(diff, dim=-1)  # (N, N)
 
     # Ignore self-distances by setting diagonal to a large value
-    dists = dists + torch.eye(pairs.shape[0], device=pairs.device) * 1e6
+    dists += torch.eye(pairs.shape[0], device=pairs.device) * 1e6
 
     # Penalize distances below min_dist using 1/distance^2
     return torch.mean(constant / torch.pow(torch.clamp(dists, min=min_dist), 2))

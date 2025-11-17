@@ -28,7 +28,7 @@ class ConstrainedParameter(torch.nn.Module):
 
     def forward(self) -> torch.Tensor:
         unit_value = torch.nn.functional.softplus(self.raw_parameter)
-        unit_value = unit_value / (1 + unit_value)
+        unit_value /= 1 + unit_value
 
         # map to slightly wider interval
         stretched_value = (1 + 2 * self.eps) * unit_value - self.eps
