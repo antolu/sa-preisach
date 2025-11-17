@@ -1,4 +1,5 @@
 from .._mod_replace import replace_modname
+from ._batched_states import get_batched_states, initialize_batched_state
 from ._grad import set_requires_grad
 from ._mesh import (
     DefaultMeshSizeFunction,
@@ -19,6 +20,8 @@ for _mod in (
     switch,
     initialize_state,
     get_states,
+    get_batched_states,
+    initialize_batched_state,
     sweep_up,
     sweep_left,
     make_mesh_size_function,
@@ -37,7 +40,9 @@ __all__ = [
     "create_triangle_mesh",
     "default_mesh_size",
     "exponential_mesh",
+    "get_batched_states",
     "get_states",
+    "initialize_batched_state",
     "initialize_state",
     "make_mesh_size_function",
     "set_requires_grad",
