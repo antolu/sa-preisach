@@ -27,10 +27,14 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         validate_every_n_epochs: int = 1,
         hysteron_scatter: bool = True,
         plot_unscaled: bool = False,
+        plot_training: bool = False,
+        train_plot_interval: int = 100,
     ) -> None:
         super().__init__()
         self.validate_every_n_epochs = validate_every_n_epochs
         self.hysteron_scatter = hysteron_scatter
+        self.plot_training = plot_training
+        self.train_plot_interval = train_plot_interval
 
     def on_validation_epoch_end(  # type: ignore[override]
         self,
@@ -59,29 +63,29 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
 
         h_transform, b_transform = list(dataset.transforms.values())
 
-        # get the last validation output
-        last_output = pl_module.validation_outputs[-1]
-        x = last_output["x"]
-        if x.ndim > 1 and x.shape[1] > 1:
-            x = x[..., 0]
-        y = last_output["y"]
-        y_hat = last_output["y_hat"]
-        x = x.squeeze(0).detach().cpu()
-        y = y.squeeze(0).detach().cpu()
-        y_hat = y_hat.squeeze(0).detach().cpu()
+        first_output = pl_module.validation_outputs[0]
 
-        x = h_transform.inverse_transform(x)
-        y = b_transform.inverse_transform(x, y)
-        y_hat = b_transform.inverse_transform(x, y_hat)
+        x_sample = first_output["x"][0]
+        y_sample = first_output["y"][0]
+        y_hat_sample = first_output["y_hat"][0]
 
-        fig_hysteresis = plot_hysteresis(x, y, y_hat)
+        if x_sample.ndim > 1 and x_sample.shape[-1] > 1:
+            x_sample = x_sample[..., 0]
+
+        x_sample = x_sample.detach().cpu()
+        y_sample = y_sample.detach().cpu()
+        y_hat_sample = y_hat_sample.detach().cpu()
+
+        x_inv = h_transform.inverse_transform(x_sample)
+        y_inv = b_transform.inverse_transform(x_sample, y_sample)
+        y_hat_inv = b_transform.inverse_transform(x_sample, y_hat_sample)
+
+        fig_hysteresis = plot_hysteresis(x_inv, y_inv, y_hat_inv)
 
         self._log_figure(trainer, fig_hysteresis, tag="validation/hysteresis")
         plt.close(fig_hysteresis)
 
-        # plot the hysteron density
-        density = last_output["density"]
-        density = density.squeeze(0).detach().cpu()
+        density = first_output["density"][0].detach().cpu()
 
         if isinstance(pl_module, SelfAdaptivePreisach):
             alpha = pl_module.model.alpha.value
@@ -109,6 +113,22 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         self._log_figure(trainer, fig_density, tag="validation/hysteron_density")
         plt.close(fig_density)
 
+        if isinstance(pl_module, EncoderDecoderPreisachNN):
+            initial_states = first_output["initial_states"][0].detach().cpu()
+
+            mesh_coords = first_output["mesh_coords"][0].detach().cpu()
+            alpha_perturbed = mesh_coords[:, 1]
+            beta_perturbed = mesh_coords[:, 0]
+
+            fig_initial_states = plot_initial_states(
+                alpha_perturbed,
+                beta_perturbed,
+                initial_states,
+            )
+
+            self._log_figure(trainer, fig_initial_states, tag="validation/initial_states")
+            plt.close(fig_initial_states)
+
         if self.hysteron_scatter:
             # plot the hysteron scatter
             fig_scatter = plot_hysteron_scatter(
@@ -119,6 +139,77 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
             plt.close(fig_scatter)
 
         return super().on_validation_epoch_end(trainer, pl_module)
+
+    def on_train_batch_end(
+        self,
+        trainer: L.Trainer,
+        pl_module: SelfAdaptivePreisach
+        | DifferentiablePreisach
+        | DifferentiablePreisachNN
+        | EncoderDecoderPreisachNN,
+        outputs: dict[str, torch.Tensor],
+        batch: typing.Any,
+        batch_idx: int,
+    ) -> None:
+        if not trainer.is_global_zero:
+            return
+
+        if not self.plot_training:
+            return
+
+        if trainer.global_step % self.train_plot_interval != 0:
+            return
+
+        train_dataloader = trainer.train_dataloader
+        if train_dataloader is None:
+            return
+
+        dataset = typing.cast(
+            TimeSeriesDataset | EncoderDecoderDataset, train_dataloader.dataset
+        )
+
+        h_transform, b_transform = list(dataset.transforms.values())
+
+        pl_module.eval()
+        with torch.no_grad():
+            out = pl_module.common_step(batch, batch_idx)
+
+        x_sample = out["x"][0]
+        y_sample = out["y"][0]
+        y_hat_sample = out["y_hat"][0]
+
+        if x_sample.ndim > 1 and x_sample.shape[-1] > 1:
+            x_sample = x_sample[..., 0]
+
+        x_sample = x_sample.detach().cpu()
+        y_sample = y_sample.detach().cpu()
+        y_hat_sample = y_hat_sample.detach().cpu()
+
+        x_inv = h_transform.inverse_transform(x_sample)
+        y_inv = b_transform.inverse_transform(x_sample, y_sample)
+        y_hat_inv = b_transform.inverse_transform(x_sample, y_hat_sample)
+
+        fig_hysteresis = plot_hysteresis(x_inv, y_inv, y_hat_inv)
+        self._log_figure(trainer, fig_hysteresis, tag="train/hysteresis")
+        plt.close(fig_hysteresis)
+
+        if isinstance(pl_module, EncoderDecoderPreisachNN):
+            initial_states = out["initial_states"][0].detach().cpu()
+
+            mesh_coords = out["mesh_coords"][0].detach().cpu()
+            alpha_perturbed = mesh_coords[:, 1]
+            beta_perturbed = mesh_coords[:, 0]
+
+            fig_initial_states = plot_initial_states(
+                alpha_perturbed,
+                beta_perturbed,
+                initial_states,
+            )
+
+            self._log_figure(trainer, fig_initial_states, tag="train/initial_states")
+            plt.close(fig_initial_states)
+
+        pl_module.train()
 
     def _log_figure(
         self, trainer: L.Trainer, fig: matplotlib.figure.Figure, tag: str
@@ -145,12 +236,17 @@ def plot_hysteresis(
         2, 1, figsize=(8, 8), gridspec_kw={"height_ratios": [2, 1]}
     )
 
-    x = x.detach().cpu().numpy()
-    y = y.detach().cpu().numpy()
-    y_hat = y_hat.detach().cpu().numpy()
+    x_np = x.detach().cpu().numpy()
+    y_np = y.detach().cpu().numpy()
+    y_hat_np = y_hat.detach().cpu().numpy()
 
-    ax1.plot(x, y, label="data")
-    ax1.plot(x, y_hat, label="model")
+    data_color = plt.cm.tab10(0)
+    model_color = plt.cm.tab10(1)
+
+    ax1.plot(x_np, y_np, color=data_color, label="data", alpha=0.7)
+    ax1.plot(x_np, y_hat_np, color=model_color, label="model", alpha=0.7)
+
+    ax2.plot(x_np, y_np - y_hat_np, color=data_color, alpha=0.7)
 
     ax1.set_xlabel("I [A]")
     ax1.set_ylabel("B [T]")
@@ -159,9 +255,12 @@ def plot_hysteresis(
     ax1.grid()
     ax1.set_title("Hysteresis")
 
-    ax2.plot(x, y - y_hat, label="error")
     ax2.set_xlabel("I [A]")
     ax2.set_ylabel("B [T]")
+    ax2.set_title("Error")
+    ax2.grid()
+
+    fig.tight_layout()
 
     return fig
 
@@ -192,6 +291,38 @@ def plot_hysteron_density(
 
     ax.set_title("Hysteron density")
 
+    fig.tight_layout()
+
+    return fig
+
+
+def plot_initial_states(
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    initial_states: torch.Tensor,
+) -> matplotlib.figure.Figure:
+    fig, ax = plt.subplots(1, 1, figsize=(8, 7))
+
+    initial_states = initial_states.detach().cpu().numpy()
+    alpha = alpha.detach().cpu().numpy()
+    beta = beta.detach().cpu().numpy()
+
+    c = ax.tripcolor(
+        beta,
+        alpha,
+        initial_states,
+        cmap="RdBu_r",
+        vmin=-1.0,
+        vmax=1.0,
+    )
+    fig.colorbar(c, ax=ax)
+    ax.set_xlabel("$\\beta$")
+    ax.set_ylabel("$\\alpha$")
+
+    ax.set_title("Initial hysteron states")
+
+    fig.tight_layout()
+
     return fig
 
 
@@ -204,10 +335,15 @@ def plot_hysteron_scatter(
     alpha = alpha.detach().cpu().numpy()
     beta = beta.detach().cpu().numpy()
 
+    # Adjust marker size based on number of mesh points
+    n_points = len(alpha)
+    # Heuristic: scale inversely with sqrt(n_points), clamped between 0.1 and 10
+    marker_size = max(0.1, min(10, 100 / (n_points**0.5)))
+
     ax.scatter(
         beta,
         alpha,
-        s=1,
+        s=marker_size,
         c="black",
         alpha=0.5,
     )
@@ -237,5 +373,7 @@ def plot_hysteron_scatter(
     ax.set_xlabel("$\\beta$")
     ax.set_ylabel("$\\alpha$")
     ax.set_title("Hysteron scatter")
+
+    fig.tight_layout()
 
     return fig
