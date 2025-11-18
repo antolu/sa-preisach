@@ -5,6 +5,7 @@ from ._gpy_constrained_parameter import GPyConstrainedParameter
 from ._preisach_lstm_encoder import PreisachLSTMEncoder
 from ._preisach_transformer_encoder import PreisachTransformerEncoder
 from ._resnet import ResNetMLP
+from ._smooth_switch import SmoothSwitch
 
 for _mod in (
     BinaryParameter,
@@ -13,6 +14,7 @@ for _mod in (
     PreisachLSTMEncoder,
     PreisachTransformerEncoder,
     ResNetMLP,
+    SmoothSwitch,
 ):
     replace_modname(_mod, __name__)
 
@@ -26,4 +28,5 @@ __all__ = [
     "PreisachLSTMEncoder",
     "PreisachTransformerEncoder",
     "ResNetMLP",
+    "SmoothSwitch",
 ]

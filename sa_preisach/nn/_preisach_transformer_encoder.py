@@ -5,6 +5,8 @@ import math
 import torch
 from transformertf.nn import VALID_ACTIVATIONS, get_activation
 
+from ._smooth_switch import SmoothSwitch
+
 
 class PreisachTransformerEncoder(torch.nn.Module):
     """
@@ -27,6 +29,8 @@ class PreisachTransformerEncoder(torch.nn.Module):
         Dropout probability. Default is 0.1.
     activation : VALID_ACTIVATIONS, optional
         Activation function. Default is "relu".
+    tanh_temp : float, optional
+        Temperature for smooth switch in output head. Default is 1e-2.
     """
 
     def __init__(  # noqa: PLR0913
@@ -39,6 +43,7 @@ class PreisachTransformerEncoder(torch.nn.Module):
         dropout: float = 0.1,
         activation: VALID_ACTIVATIONS = "relu",
         dim_feedforward: int | None = None,
+        tanh_temp: float = 1e-2,
     ) -> None:
         super().__init__()
 
@@ -95,7 +100,7 @@ class PreisachTransformerEncoder(torch.nn.Module):
             get_activation(activation),
             torch.nn.Dropout(dropout),
             torch.nn.Linear(d_model // 2, 1),
-            torch.nn.Tanh(),  # Ensure output in [-1, 1] range
+            SmoothSwitch(temp=tanh_temp),
         )
 
         self.layer_norm = torch.nn.LayerNorm(d_model)

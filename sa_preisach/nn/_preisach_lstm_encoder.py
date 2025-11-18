@@ -3,6 +3,8 @@ from __future__ import annotations
 import torch
 from transformertf.nn import GatedResidualNetwork as GRN  # noqa: N817
 
+from ._smooth_switch import SmoothSwitch
+
 
 class PreisachLSTMEncoder(torch.nn.Module):
     def __init__(
@@ -12,6 +14,7 @@ class PreisachLSTMEncoder(torch.nn.Module):
         hidden_dim: int = 128,
         num_layers: int = 2,
         dropout: float = 0.1,
+        tanh_temp: float = 1e-2,
     ) -> None:
         super().__init__()
 
@@ -47,9 +50,8 @@ class PreisachLSTMEncoder(torch.nn.Module):
 
         self.state_head = torch.nn.Sequential(
             torch.nn.Linear(hidden_dim, 1),
-            torch.nn.Tanh(),
+            SmoothSwitch(temp=tanh_temp),
         )
-        # TODO: temp for tanh, look for vanishing gradients
 
     def forward(
         self,
