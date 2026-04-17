@@ -7,7 +7,7 @@ trainer:
   log_every_n_steps: 1
   devices: 1
   gradient_clip_val: null
-  enable_checkpointing: false
+  # enable_checkpointing: false
   enable_progress_bar: true
   callbacks:
     - class_path: sa_preisach.callbacks.PlotHysteresisCallback
@@ -19,29 +19,29 @@ trainer:
 data:
   class_path: transformertf.data.EncoderDecoderDataModule
   init_args:
-    known_covariates: I_ref_A
-    target_covariate: B_meas_T_filtered
-    train_df_paths: sample_train.parquet
-    val_df_paths: sample_val.parquet
-    # Encoder-decoder sequence lengths
-    ctxt_seq_len: 200 # Context sequence for encoder (historical behavior)
-    tgt_seq_len: 100 # Target sequence for decoder (prediction length)
-    downsample: 20
-    normalize: false # normalize with scalers below in extra_transforms
-    target_depends_on: I_ref_A
-    batch_size: 64 # Single batch for debugging
-    num_workers: 0 # Set to 0 for debugging
-    shuffle: true # Disable for testing
+    known_covariates: I_meas_A_filtered
+    target_covariate: B_meas_T_filtered_eddy_corrected
+    train_df_paths: ~/cernbox/hysteresis/dipole/datasets/v10/rdp_datasets/validation/MD20240904/MD20240904_all_preprocessed_rdp_1_00e-03.parquet
+    val_df_paths: ~/cernbox/hysteresis/dipole/datasets/v10/rdp_datasets/extras/SPS-BTRAIN-20231102-091712---20231102-092616_phys+lhcfill_zero_precycle_preprocessed_rdp_1_00e-03.parquet
+    ctxt_seq_len: 200
+    tgt_seq_len: 100
+    downsample: 1
+    normalize: false
+    target_depends_on: I_meas_A_filtered
+    batch_size: 64
+    num_workers: 0
+    shuffle: true
     extra_transforms:
-      B_meas_T_filtered:
+      B_meas_T_filtered_eddy_corrected:
         - class_path: transformertf.data.transform.DiscreteFunctionTransform
           init_args:
-            xs_: calibration_fn.csv
+            xs_: sample/calibration_fn.csv
+            # xs_: ~/cernbox/hysteresis/calibration_fn/SPS_MB_I2B_CALIBRATION_FN_v8.csv
         - class_path: transformertf.data.transform.MinMaxScaler
           init_args:
             min_: 0
             max_: 1
-      I_ref_A:
+      I_meas_A_filtered:
         - class_path: transformertf.data.transform.MinMaxScaler
           init_args:
             min_: 0
@@ -50,7 +50,7 @@ data:
 model:
   class_path: sa_preisach.models.EncoderDecoderPreisachNN
   init_args:
-    mesh_scale: 0.01
+    mesh_scale: 0.005
     mesh_density_function: exponential
     mesh_perturbation_std: 0.005
     encoder:
@@ -60,10 +60,10 @@ model:
         hidden_dim: 16
         num_layers: 2
         dropout: 0.1
-    num_layers: 2
-    hidden_dim: 16
+    num_layers: 3
+    hidden_dim: 32
     temp: 1e-2
-    lr: 1e-3
+    lr: 5e-4
     lr_scale: 1e-2
     lr_step_interval: 10
     m_scale_bounds: [0.0, 10.0]
@@ -71,7 +71,8 @@ model:
     normalized_density: false
     compile_model: false
     linear_fit_steps: 50
-    encoder_fit_steps: 1000
-    density_fit_steps: 500
+    encoder_fit_steps: 4000
+    density_fit_steps: 2000
     gradient_clip_val: 1.0
+
 no_auto_configure_optimizers: true # VERY IMPORTANT FOR ALLOWING MULTIPLE OPTIMIZERS

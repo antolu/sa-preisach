@@ -1,0 +1,85 @@
+seed_everything: null
+trainer:
+  accelerator: cpu
+  max_epochs: 100
+  min_epochs: 5
+  val_check_interval: 0.01
+  log_every_n_steps: 1
+  devices: 1
+  gradient_clip_val: null
+  enable_checkpointing: false
+  enable_progress_bar: true
+  callbacks:
+    - class_path: sa_preisach.callbacks.PlotHysteresisCallback
+      init_args:
+        # hysteron_scatter: False
+        plot_training: True
+        train_plot_interval: 100
+
+# optimizer:
+#   class_path: torch.optim.AdamW
+#   init_args:
+#     lr: 5e-3
+
+data:
+  class_path: transformertf.data.EncoderDecoderDataModule
+  init_args:
+    known_covariates: I_meas_A_filtered
+    target_covariate: B_meas_T_filtered_eddy_corrected
+    train_df_paths: ~/cernbox/hysteresis/dipole/datasets/v10/rdp_datasets/validation/MD20240904/MD20240904_all_preprocessed_rdp_1_00e-03.parquet
+    val_df_paths: ~/cernbox/hysteresis/dipole/datasets/v10/rdp_datasets/extras/SPS-BTRAIN-20231102-091712---20231102-092616_phys+lhcfill_zero_precycle_preprocessed_rdp_1_00e-03.parquet
+    # Encoder-decoder sequence lengths
+    ctxt_seq_len: 200 # Context sequence for encoder (historical behavior)
+    tgt_seq_len: 100 # Target sequence for decoder (prediction length)
+    downsample: 1
+    normalize: false
+    target_depends_on: I_meas_A_filtered
+    batch_size: 16 # Single batch for debugging
+    num_workers: 0 # Set to 0 for debugging
+    shuffle: true
+    extra_transforms:
+      B_meas_T_filtered_eddy_corrected:
+        - class_path: transformertf.data.transform.DiscreteFunctionTransform
+          init_args:
+            xs_: sample/calibration_fn.csv
+        - class_path: transformertf.data.transform.MinMaxScaler
+          init_args:
+            min_: 0
+            max_: 1
+      I_meas_A_filtered:
+        - class_path: transformertf.data.transform.MinMaxScaler
+          init_args:
+            min_: 0
+            max_: 1
+
+model:
+  class_path: sa_preisach.models.EncoderDecoderPreisachNN
+  init_args:
+    # Mesh settigns
+    mesh_scale: 0.05
+    mesh_perturbation_std: 0.01 # Gaussian noise std for training regularization
+    encoder:
+      class_path: sa_preisach.nn.PreisachTransformerEncoder
+      init_args:
+        num_features: 2
+        d_model: 16 # Smaller model for testing
+        num_heads: 2 # Fewer heads for testing
+        num_layers: 1 # Fewer layers for testing
+        dropout: 0.1
+    # Preisach decoder parameters
+    hidden_dim: 32
+    num_layers: 3
+    temp: 1e-3
+    # Optimization parameters
+    lr: 1e-4
+    lr_scale: 1e-2
+    lr_step_interval: 50
+    # lr_gamma: 0.95
+    # Physical constraints
+    m_scale_bounds: [0.0, 10.0]
+    offset_bounds: [-10.0, 10.0]
+    normalized_density: true
+    compile_model: false
+    linear_fit_steps: 30
+    encoder_fit_steps: 100
+    density_fit_steps: 500 # fast dev
