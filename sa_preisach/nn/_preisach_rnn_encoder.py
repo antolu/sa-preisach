@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import torch
-from transformertf.nn import GatedResidualNetwork as GRN  # noqa: N817
+import transformertf.nn
 
 from ._preisach_encoder import PreisachEncoder
 from ._smooth_switch import SmoothSwitch
 
 
-class PreisachLSTMEncoder(PreisachEncoder):
+class PreisachRNNEncoder(PreisachEncoder):
     def __init__(
         self,
         num_features: int,
@@ -15,6 +15,7 @@ class PreisachLSTMEncoder(PreisachEncoder):
         hidden_dim: int = 128,
         num_layers: int = 2,
         dropout: float = 0.1,
+        nonlinearity: str = "tanh",
         tanh_temp: float = 1e-2,
     ) -> None:
         super().__init__()
@@ -23,15 +24,16 @@ class PreisachLSTMEncoder(PreisachEncoder):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
 
-        self.lstm = torch.nn.LSTM(
+        self.rnn = torch.nn.RNN(
             input_size=num_features,
             hidden_size=hidden_dim,
             num_layers=num_layers,
             dropout=dropout if num_layers > 1 else 0.0,
+            nonlinearity=nonlinearity,
             batch_first=True,
         )
 
-        self.mesh_embedding = GRN(
+        self.mesh_embedding = transformertf.nn.GatedResidualNetwork(
             input_dim=3,
             d_hidden=hidden_dim,
             output_dim=hidden_dim,
@@ -40,7 +42,7 @@ class PreisachLSTMEncoder(PreisachEncoder):
             activation="lrelu",
         )
 
-        self.state_grn = GRN(
+        self.state_grn = transformertf.nn.GatedResidualNetwork(
             input_dim=hidden_dim,
             d_hidden=hidden_dim,
             output_dim=hidden_dim,
@@ -66,12 +68,10 @@ class PreisachLSTMEncoder(PreisachEncoder):
 
         assert batch_size == batch_size_mesh
 
-        lstm_out, (h_n, _c_n) = self.lstm(sequence)
-
+        _rnn_out, h_n = self.rnn(sequence)
         last_hidden = h_n[-1]
 
         mesh_embedded = self.mesh_embedding(mesh_features)
-
         last_hidden_expanded = last_hidden.unsqueeze(1).expand(-1, n_mesh_points, -1)
 
         state_features = self.state_grn(mesh_embedded, context=last_hidden_expanded)

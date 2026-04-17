@@ -5,10 +5,11 @@ import math
 import torch
 from transformertf.nn import VALID_ACTIVATIONS, get_activation
 
+from ._preisach_encoder import PreisachEncoder
 from ._smooth_switch import SmoothSwitch
 
 
-class PreisachTransformerEncoder(torch.nn.Module):
+class PreisachTransformerEncoder(PreisachEncoder):
     """
     Transformer encoder for generating initial hysteron states from historical sequences.
 
@@ -81,7 +82,7 @@ class PreisachTransformerEncoder(torch.nn.Module):
 
         # Mesh coordinate embedding (alpha, beta) -> d_model
         self.mesh_embedding = torch.nn.Sequential(
-            torch.nn.Linear(2, d_model // 2),
+            torch.nn.Linear(3, d_model // 2),
             get_activation(activation),
             torch.nn.Linear(d_model // 2, d_model),
         )
@@ -108,7 +109,7 @@ class PreisachTransformerEncoder(torch.nn.Module):
     def forward(
         self,
         sequence: torch.Tensor,
-        mesh_coords: torch.Tensor,
+        mesh_features: torch.Tensor,
         sequence_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
@@ -118,8 +119,8 @@ class PreisachTransformerEncoder(torch.nn.Module):
         ----------
         sequence : torch.Tensor
             Historical H/B sequence data of shape [batch_size, seq_len, sequence_features]
-        mesh_coords : torch.Tensor
-            Mesh coordinates (alpha, beta) of shape [batch_size, n_mesh_points, 2]
+        mesh_features : torch.Tensor
+            Mesh features of shape [batch_size, n_mesh_points, 3]
         sequence_mask : torch.Tensor, optional
             Attention mask for variable-length sequences of shape [batch_size, seq_len]
 
@@ -129,7 +130,7 @@ class PreisachTransformerEncoder(torch.nn.Module):
             Initial hysteron states of shape [batch_size, n_mesh_points]
         """
         batch_size, _seq_len, _ = sequence.shape
-        batch_size_mesh, _n_mesh_points, _ = mesh_coords.shape
+        batch_size_mesh, _n_mesh_points, _ = mesh_features.shape
 
         assert batch_size == batch_size_mesh, "Batch sizes must match"
 
@@ -149,7 +150,7 @@ class PreisachTransformerEncoder(torch.nn.Module):
 
         # Embed mesh coordinates
         mesh_embedded = self.mesh_embedding(
-            mesh_coords
+            mesh_features
         )  # [batch_size, n_mesh_points, d_model]
 
         # Cross-attention: mesh points attend to sequence context

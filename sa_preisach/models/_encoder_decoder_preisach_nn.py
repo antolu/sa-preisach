@@ -10,7 +10,12 @@ from transformertf.data import EncoderDecoderTargetSample
 from transformertf.models._base_transformer import create_mask
 from transformertf.nn.functional import mse_loss
 
-from ..nn import GPyConstrainedParameter, PreisachLSTMEncoder, ResNetMLP
+from ..nn import (
+    GPyConstrainedParameter,
+    PreisachEncoder,
+    PreisachLSTMEncoder,
+    ResNetMLP,
+)
 from ..utils import (
     create_triangle_mesh,
     get_states,
@@ -29,11 +34,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         self,
         *,
         mesh_size: float,
-        num_past_features: int = 2,
-        d_model: int = 128,
-        num_heads: int = 8,
-        num_encoder_layers: int = 4,
-        encoder_hidden_dim: int | None = None,
+        encoder: PreisachEncoder,
         hidden_dim: int,
         num_layers: int = 3,
         m_scale_bounds: tuple[float, float] = (0.0, 10.0),
@@ -41,7 +42,6 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         normalized_density: bool = True,
         mesh_density_function: typing.Literal["constant", "default", "exponential"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
-        encoder_dropout: float = 0.1,
         mesh_perturbation_std: float = 0.01,
     ) -> None:
         super().__init__()
@@ -60,16 +60,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         self.register_buffer("base_mesh", base_mesh)
         self.n_mesh_points = self.base_mesh.shape[0]
 
-        # LSTM encoder for generating initial states
-        encoder_hdim = (
-            encoder_hidden_dim if encoder_hidden_dim is not None else hidden_dim
-        )
-        self.encoder = PreisachLSTMEncoder(
-            num_features=num_past_features,
-            hidden_dim=encoder_hdim,
-            num_layers=num_encoder_layers,
-            dropout=encoder_dropout,
-        )
+        self.encoder = encoder
 
         # Density network (same as original model)
         self.density = ResNetMLP(
@@ -171,27 +162,27 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         batch_size = encoder_input.shape[0]
 
         # Expand mesh coordinates for batch
-        mesh_coords = self.base_mesh.unsqueeze(0).expand(
-            batch_size, -1, -1
+        mesh_coords = self.get_batched_mesh_coords(
+            batch_size
         )  # [batch_size, n_mesh_points, 2]
 
         # Perturb mesh during training for density network regularization
         mesh_coords = self._perturb_mesh(mesh_coords, self.training)
 
         # Compute density weights first
-        density = self.density(mesh_coords)  # [batch_size, n_mesh_points, 1]
-        density = self.density_activation(density)
-        density_squeezed = density.squeeze(-1)  # [batch_size, n_mesh_points]
+        density = self.density_from_mesh(
+            mesh_coords, beta=None
+        )  # [batch_size, n_mesh_points]
 
         # Concatenate density to mesh coordinates for encoder
         mesh_coords_with_density = torch.cat(
-            [mesh_coords, density], dim=-1
+            [mesh_coords, density.unsqueeze(-1)], dim=-1
         )  # [batch_size, n_mesh_points, 3]
 
         # Encode initial hysteron states from historical sequences
         initial_states = self.encoder(
             sequence=encoder_input,
-            mesh_coords=mesh_coords_with_density,
+            mesh_features=mesh_coords_with_density,
             sequence_mask=encoder_mask,
         )  # [batch_size, n_mesh_points]
 
@@ -238,11 +229,11 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         states = states_cpu.to(h.device)
 
         # Normalize density once (constant across time)
-        density_sum = density_squeezed.sum(dim=-1, keepdim=True)  # [batch_size, 1]
+        density_sum = density.sum(dim=-1, keepdim=True)  # [batch_size, 1]
 
         # Compute magnetization for each time step
         m = (
-            torch.sum(density_squeezed.unsqueeze(1) * states, dim=-1) / density_sum
+            torch.sum(density.unsqueeze(1) * states, dim=-1) / density_sum
         )  # [batch_size, tgt_seq_len]
 
         # Apply physics-informed scaling: B = h_scale * H + m_scale * M + offset
@@ -250,74 +241,65 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
 
         return (
             b_out,
-            density_squeezed,
+            density,
             m,
             initial_states,
             mesh_coords,
         )  # Return B, density, unscaled M, initial states, and mesh coords
 
+    def get_batched_mesh_coords(self, batch_size: int) -> torch.Tensor:
+        """
+        Get batched mesh coordinates for the entire batch.
+
+        Parameters
+        ----------
+        batch_size : int
+            The size of the batch
+
+        Returns
+        -------
+        torch.Tensor
+            Batched mesh coordinates of shape [batch_size, n_mesh_points, 2]
+        """
+        return self.base_mesh.unsqueeze(0).expand(batch_size, -1, -1)
+
+    def density_from_mesh(
+        self, mesh_coords: torch.Tensor, beta: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """
+        Compute density values from mesh coordinates.
+
+        Parameters
+        ----------
+        mesh_coords : torch.Tensor
+            Mesh coordinates of shape [batch_size, n_mesh_points, 2]
+
+        Returns
+        -------
+        torch.Tensor
+            Density values of shape [batch_size, n_mesh_points]
+        """
+        if beta is not None:  # assume mesh_coords is alpha
+            mesh_coords = torch.cat(
+                [beta.unsqueeze(-1), mesh_coords], dim=-1
+            )  # [batch_size, n_mesh_points, 2]
+        density = self.density(mesh_coords)  # [batch_size, n_mesh_points, 1]
+        density = self.density_activation(density)
+        return density.squeeze(-1)  # [batch_size, n_mesh_points]
+
 
 class EncoderDecoderPreisachNN(BaseModule):
     model: EncoderDecoderPreisachNNModel
-
-    """
-    Encoder-Decoder Preisach Neural Network model with transformer encoder.
-
-    This model extends the original Preisach NN by using a transformer encoder to generate
-    initial hysteron states from historical sequences, enabling batched processing and
-    arbitrary mesh scaling.
-
-    Parameters
-    ----------
-    mesh_scale : float
-        The scale of the mesh for creating the Preisach model.
-    num_past_features : int, optional
-        Number of features in input sequences (typically 2 for H and B). Default is 2.
-    d_model : int, optional
-        Transformer model dimension. Default is 128.
-    num_heads : int, optional
-        Number of transformer attention heads. Default is 8.
-    num_encoder_layers : int, optional
-        Number of transformer encoder layers. Default is 4.
-    hidden_dim : int
-        The number of hidden units in the MLP used to model the Preisach density.
-    num_layers : int, optional
-        The number of layers in the MLP used to model the Preisach density. Default is 3.
-    temp : float, optional
-        The temperature parameter for the hysteron activation function (tanh). Default is 1e-3.
-    lr : float, optional
-        The learning rate for the main optimizer. Default is 1e-2.
-    lr_scale : float, optional
-        The learning rate for the scale and offset parameters. Default is 1e-3.
-    lr_step_interval : int, optional
-        The interval at which to step the learning rate scheduler. Default is 100.
-    lr_gamma : float, optional
-        The factor by which to scale the learning rate at each step. Default is 0.9.
-    m_scale_bounds : tuple[float, float], optional
-        The bounds for the scale parameter of the Preisach model. Default is (0.0, 10.0).
-    offset_bounds : tuple[float, float], optional
-        The bounds for the offset parameter of the Preisach model. Default is (-10.0, 10.0).
-    normalized_density : bool, optional
-        Whether to normalize the density function. Default is True.
-    mesh_density_function : str or callable, optional
-        The function to use for the mesh density. Default is "default".
-    compile_model : bool, optional
-        Whether to compile the model using torch.compile. Default is True.
-    encoder_dropout : float, optional
-        Dropout probability for transformer encoder. Default is 0.1.
-    n_train_samples : int, optional
-        The number of training samples. Default is 0.
-    """
 
     def __init__(  # noqa: PLR0913
         self,
         mesh_scale: float,
         *,
         num_past_features: int = 2,
-        d_model: int = 128,
-        num_heads: int = 8,
-        num_encoder_layers: int = 4,
         encoder_hidden_dim: int | None = None,
+        encoder_num_layers: int = 2,
+        encoder_dropout: float = 0.1,
+        encoder: PreisachEncoder | None = None,
         hidden_dim: int,
         num_layers: int = 3,
         temp: float = 1e-3,
@@ -331,7 +313,6 @@ class EncoderDecoderPreisachNN(BaseModule):
         mesh_density_function: typing.Literal["constant", "default", "exponential"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
         compile_model: bool = True,
-        encoder_dropout: float = 0.1,
         mesh_perturbation_std: float = 0.01,
         linear_fit_steps: int = 0,
         encoder_fit_steps: int = 0,
@@ -340,22 +321,26 @@ class EncoderDecoderPreisachNN(BaseModule):
         n_train_samples: int = 0,
     ) -> None:
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["encoder"])
+        encoder_hdim = (
+            encoder_hidden_dim if encoder_hidden_dim is not None else hidden_dim
+        )
+        encoder_module = encoder or PreisachLSTMEncoder(
+            num_features=num_past_features,
+            hidden_dim=encoder_hdim,
+            num_layers=encoder_num_layers,
+            dropout=encoder_dropout,
+        )
 
         self.model = EncoderDecoderPreisachNNModel(
             mesh_size=mesh_scale,
-            num_past_features=num_past_features,
-            d_model=d_model,
-            num_heads=num_heads,
-            num_encoder_layers=num_encoder_layers,
-            encoder_hidden_dim=encoder_hidden_dim,
+            encoder=encoder_module,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
             m_scale_bounds=m_scale_bounds,
             offset_bounds=offset_bounds,
             normalized_density=normalized_density,
             mesh_density_function=mesh_density_function,
-            encoder_dropout=encoder_dropout,
             mesh_perturbation_std=mesh_perturbation_std,
         )
 
