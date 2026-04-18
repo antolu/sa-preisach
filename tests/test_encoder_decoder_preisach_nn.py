@@ -127,17 +127,21 @@ def test_encoder_decoder_model_instantiation_and_forward(
     assert mesh_coords.shape == (2, 3, 2)
 
 
-def test_encoder_decoder_model_default_encoder(fake_triangle_mesh: None) -> None:
+def test_encoder_decoder_model_requires_encoder(fake_triangle_mesh: None) -> None:
     del fake_triangle_mesh
-    model = EncoderDecoderPreisachNN(
-        mesh_scale=0.5,
-        hidden_dim=8,
-        num_layers=2,
-        compile_model=False,
-        mesh_perturbation_std=0.0,
-    )
-
-    assert isinstance(model.model.encoder, PreisachLSTMEncoder)
+    with pytest.raises(TypeError):
+        EncoderDecoderPreisachNN(
+            **typing.cast(
+                typing.Any,
+                {
+                    "mesh_scale": 0.5,
+                    "hidden_dim": 8,
+                    "num_layers": 2,
+                    "compile_model": False,
+                    "mesh_perturbation_std": 0.0,
+                },
+            )
+        )
 
 
 @pytest.mark.parametrize(
@@ -192,21 +196,18 @@ def test_lightning_parser_instantiates_model_encoder(
     assert isinstance(model.model.encoder, expected_encoder_cls)
 
 
-def test_lightning_parser_model_default_encoder(fake_triangle_mesh: None) -> None:
+def test_lightning_parser_model_requires_encoder(fake_triangle_mesh: None) -> None:
     del fake_triangle_mesh
     parser = LightningArgumentParser()
     parser.add_lightning_class_args(EncoderDecoderPreisachNN, "model")
 
-    config = parser.parse_object({
-        "model": {
-            "mesh_scale": 0.5,
-            "hidden_dim": 8,
-            "num_layers": 2,
-            "compile_model": False,
-            "mesh_perturbation_std": 0.0,
-        }
-    })
-    instantiated = parser.instantiate_classes(config)
-    model = typing.cast(EncoderDecoderPreisachNN, instantiated["model"])
-
-    assert isinstance(model.model.encoder, PreisachLSTMEncoder)
+    with pytest.raises(SystemExit):
+        parser.parse_object({
+            "model": {
+                "mesh_scale": 0.5,
+                "hidden_dim": 8,
+                "num_layers": 2,
+                "compile_model": False,
+                "mesh_perturbation_std": 0.0,
+            }
+        })

@@ -13,7 +13,6 @@ from transformertf.nn.functional import mse_loss
 from ..nn import (
     GPyConstrainedParameter,
     PreisachEncoder,
-    PreisachLSTMEncoder,
     ResNetMLP,
 )
 from ..utils import (
@@ -295,11 +294,7 @@ class EncoderDecoderPreisachNN(BaseModule):
         self,
         mesh_scale: float,
         *,
-        num_past_features: int = 2,
-        encoder_hidden_dim: int | None = None,
-        encoder_num_layers: int = 2,
-        encoder_dropout: float = 0.1,
-        encoder: PreisachEncoder | None = None,
+        encoder: PreisachEncoder,
         hidden_dim: int,
         num_layers: int = 3,
         temp: float = 1e-3,
@@ -322,19 +317,10 @@ class EncoderDecoderPreisachNN(BaseModule):
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["encoder"])
-        encoder_hdim = (
-            encoder_hidden_dim if encoder_hidden_dim is not None else hidden_dim
-        )
-        encoder_module = encoder or PreisachLSTMEncoder(
-            num_features=num_past_features,
-            hidden_dim=encoder_hdim,
-            num_layers=encoder_num_layers,
-            dropout=encoder_dropout,
-        )
 
         self.model = EncoderDecoderPreisachNNModel(
             mesh_size=mesh_scale,
-            encoder=encoder_module,
+            encoder=encoder,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
             m_scale_bounds=m_scale_bounds,
