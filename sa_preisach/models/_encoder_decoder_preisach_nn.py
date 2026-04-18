@@ -289,6 +289,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
 
 class EncoderDecoderPreisachNN(BaseModule):
     model: EncoderDecoderPreisachNNModel
+    supports_multiple_validation_dataloaders: bool = True
 
     def __init__(  # noqa: PLR0913
         self,
@@ -582,8 +583,12 @@ class EncoderDecoderPreisachNN(BaseModule):
         return loss
 
     def validation_step(
-        self, batch: EncoderDecoderTargetSample[torch.Tensor], batch_idx: int
+        self,
+        batch: EncoderDecoderTargetSample[torch.Tensor],
+        batch_idx: int,
+        dataloader_idx: int = 0,
     ) -> dict[str, torch.Tensor]:
+        del dataloader_idx
         with torch.no_grad():
             out = self.common_step(batch, batch_idx)
 

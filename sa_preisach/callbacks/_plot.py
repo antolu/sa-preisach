@@ -36,7 +36,7 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         self.plot_training = plot_training
         self.train_plot_interval = train_plot_interval
 
-    def on_validation_epoch_end(  # type: ignore[override]  # noqa: PLR0915
+    def on_validation_epoch_end(  # type: ignore[override]
         self,
         trainer: L.Trainer,
         pl_module: SelfAdaptivePreisach
@@ -50,24 +50,59 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         if trainer.current_epoch % self.validate_every_n_epochs != 0:
             return super().on_validation_epoch_end(trainer, pl_module)
 
-        dataloader = trainer.val_dataloaders
-        if dataloader is None:
+        dataloaders = trainer.val_dataloaders
+        if dataloaders is None:
             if trainer.global_step > 0:
                 msg = "No datamodule found"
                 log.error(msg)
             return super().on_validation_epoch_end(trainer, pl_module)
 
-        dataset = typing.cast(
-            TimeSeriesDataset | EncoderDecoderDataset, dataloader.dataset
-        )
+        if isinstance(dataloaders, list):
+            for dataloader_idx, dataloader in enumerate(dataloaders):
+                outputs = pl_module.validation_outputs_by_dataloader.get(dataloader_idx)
+                if not outputs:
+                    continue
+                self._log_validation_output(
+                    trainer=trainer,
+                    pl_module=pl_module,
+                    dataset=typing.cast(
+                        TimeSeriesDataset | EncoderDecoderDataset, dataloader.dataset
+                    ),
+                    output=outputs[0],
+                    tag_prefix=f"validation/{dataloader_idx}",
+                )
+        else:
+            if not pl_module.validation_outputs:
+                return super().on_validation_epoch_end(trainer, pl_module)
+            self._log_validation_output(
+                trainer=trainer,
+                pl_module=pl_module,
+                dataset=typing.cast(
+                    TimeSeriesDataset | EncoderDecoderDataset, dataloaders.dataset
+                ),
+                output=pl_module.validation_outputs[0],
+                tag_prefix="validation",
+            )
 
+        return super().on_validation_epoch_end(trainer, pl_module)
+
+    def _log_validation_output(
+        self,
+        *,
+        trainer: L.Trainer,
+        pl_module: SelfAdaptivePreisach
+        | DifferentiablePreisach
+        | DifferentiablePreisachNN
+        | EncoderDecoderPreisachNN,
+        dataset: TimeSeriesDataset | EncoderDecoderDataset,
+        output: dict[str, torch.Tensor],
+        tag_prefix: str,
+    ) -> None:
         h_transform, b_transform = list(dataset.transforms.values())
 
-        first_output = pl_module.validation_outputs[0]
-
-        x_sample = first_output["x"][0]
-        y_sample = first_output["y"][0]
-        y_hat_sample = first_output["y_hat"][0]
+        x_sample = output["x"][0]
+        y_sample = output["y"][0]
+        y_hat_sample = output["y_hat"][0]
 
         if x_sample.ndim > 1 and x_sample.shape[-1] > 1:
             x_sample = x_sample[..., 0]
@@ -81,11 +116,10 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         y_hat_inv = b_transform.inverse_transform(x_sample, y_hat_sample)
 
         fig_hysteresis = plot_hysteresis(x_inv, y_inv, y_hat_inv)
-
-        self._log_figure(trainer, fig_hysteresis, tag="validation/hysteresis")
+        self._log_figure(trainer, fig_hysteresis, tag=f"{tag_prefix}/hysteresis")
         plt.close(fig_hysteresis)
 
-        density = first_output["density"][0].detach().cpu()
+        density = output["density"][0].detach().cpu()
 
         if isinstance(pl_module, SelfAdaptivePreisach):
             alpha = pl_module.model.alpha.value
@@ -99,24 +133,18 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         else:
             msg = "Model not supported"
             log.error(msg)
-            return super().on_validation_epoch_end(trainer, pl_module)
+            return
 
         alpha = alpha.detach().cpu()
         beta = beta.detach().cpu()
 
-        fig_density = plot_hysteron_density(
-            alpha,
-            beta,
-            density,
-        )
-
-        self._log_figure(trainer, fig_density, tag="validation/hysteron_density")
+        fig_density = plot_hysteron_density(alpha, beta, density)
+        self._log_figure(trainer, fig_density, tag=f"{tag_prefix}/hysteron_density")
         plt.close(fig_density)
 
         if isinstance(pl_module, EncoderDecoderPreisachNN):
-            initial_states = first_output["initial_states"][0].detach().cpu()
-
-            mesh_coords = first_output["mesh_coords"][0].detach().cpu()
+            initial_states = output["initial_states"][0].detach().cpu()
+            mesh_coords = output["mesh_coords"][0].detach().cpu()
             alpha_perturbed = mesh_coords[:, 1]
             beta_perturbed = mesh_coords[:, 0]
 
@@ -127,20 +155,14 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
             )
 
             self._log_figure(
-                trainer, fig_initial_states, tag="validation/initial_states"
+                trainer, fig_initial_states, tag=f"{tag_prefix}/initial_states"
             )
             plt.close(fig_initial_states)
 
         if self.hysteron_scatter:
-            # plot the hysteron scatter
-            fig_scatter = plot_hysteron_scatter(
-                alpha,
-                beta,
-            )
-            self._log_figure(trainer, fig_scatter, tag="validation/hysteron_scatter")
+            fig_scatter = plot_hysteron_scatter(alpha, beta)
+            self._log_figure(trainer, fig_scatter, tag=f"{tag_prefix}/hysteron_scatter")
             plt.close(fig_scatter)
-
-        return super().on_validation_epoch_end(trainer, pl_module)
 
     def on_train_batch_end(
         self,

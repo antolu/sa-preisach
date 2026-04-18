@@ -9,11 +9,18 @@ from transformertf.data import TimeSeriesSample
 
 
 class BaseModule(L.LightningModule):
+    supports_multiple_validation_dataloaders: bool = False
+    require_single_training_batch: bool = True
+    require_single_validation_batch: bool = True
+
     def __init__(
         self,
     ) -> None:
         super().__init__()
         self.validation_outputs: list[dict[str, torch.Tensor]] = []
+        self.validation_outputs_by_dataloader: dict[
+            int, list[dict[str, torch.Tensor]]
+        ] = {}
 
     def on_fit_start(self) -> None:
         self.maybe_compile_model()
@@ -44,15 +51,26 @@ class BaseModule(L.LightningModule):
             msg = "No validation dataloader found"
             raise ValueError(msg)
 
-        if len(self.trainer.train_dataloader) != 1:
+        if (
+            self.require_single_training_batch
+            and len(self.trainer.train_dataloader) != 1
+        ):
             msg = "Training dataloader must have only 1 batch"
             raise ValueError(msg)
 
         if isinstance(self.trainer.val_dataloaders, list):
-            msg = "This model only supports a single validation dataloader"
-            raise ValueError(msg)  # noqa: TRY004
-
-        if len(self.trainer.val_dataloaders) != 1:
+            if not self.supports_multiple_validation_dataloaders:
+                msg = "This model only supports a single validation dataloader"
+                raise ValueError(msg)
+            if self.require_single_validation_batch:
+                for dataloader in self.trainer.val_dataloaders:
+                    if len(dataloader) != 1:
+                        msg = "Validation dataloaders must each have only 1 batch"
+                        raise ValueError(msg)
+        elif (
+            self.require_single_validation_batch
+            and len(self.trainer.val_dataloaders) != 1
+        ):
             msg = "Validation dataloader must have only 1 batch"
             raise ValueError(msg)
 
@@ -60,6 +78,7 @@ class BaseModule(L.LightningModule):
 
     def on_validation_epoch_start(self) -> None:
         self.validation_outputs.clear()
+        self.validation_outputs_by_dataloader.clear()
         return super().on_validation_epoch_start()
 
     def on_validation_batch_end(  # type: ignore[override]
@@ -70,6 +89,9 @@ class BaseModule(L.LightningModule):
         dataloader_idx: int = 0,
     ) -> None:
         self.validation_outputs.append(outputs)
+        self.validation_outputs_by_dataloader.setdefault(dataloader_idx, []).append(
+            outputs
+        )
 
         return super().on_validation_batch_end(
             outputs, batch, batch_idx, dataloader_idx
