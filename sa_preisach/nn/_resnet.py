@@ -5,7 +5,7 @@ from transformertf.nn import VALID_ACTIVATIONS, get_activation
 
 
 class ResNetMLP(torch.nn.Module):
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         input_dim: int,
         output_dim: int,

@@ -4,6 +4,7 @@ dependencies = [
   "numpy >= 1.26, < 2.0",
   "pandas >= 2.0, < 3.0",
   "torch >= 2.5.1, < 3.0",
+  "gpytorch >= 1.15",
   "transformertf >= 0.13",
   "lightning >= 2.2.2, < 3.0",
   "pygmsh >= 7.0.0",
@@ -159,6 +160,9 @@ ignore = ["E501", "W505", "ISC001", "PD901", "PLW2901", "N812", "N806", "G004"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 6
 
 [tool.ruff.format]
 preview = true

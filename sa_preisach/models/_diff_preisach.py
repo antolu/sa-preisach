@@ -45,7 +45,7 @@ class DifferentiablePreisachModel(torch.nn.Module):
         Default is 'default'.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         *,
         mesh_scale: float,
@@ -130,7 +130,7 @@ class DifferentiablePreisachModel(torch.nn.Module):
         return_states: typing.Literal[True],
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
-    def forward(  # noqa: PLR0913
+    def forward(
         self,
         h: torch.Tensor,
         m0: torch.Tensor | float | None = None,
@@ -253,7 +253,7 @@ class DifferentiablePreisach(BaseModule):
         return_states: typing.Literal[True],
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
-    def forward(  # noqa: PLR0913
+    def forward(
         self,
         h: torch.Tensor,
         m0: torch.Tensor | float | None = None,

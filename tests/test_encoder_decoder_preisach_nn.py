@@ -64,12 +64,12 @@ def fake_triangle_mesh(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(
     "encoder_cls",
-    (
+    [
         PreisachLSTMEncoder,
         PreisachGRUEncoder,
         PreisachRNNEncoder,
         PreisachTransformerEncoder,
-    ),
+    ],
 )
 def test_encoder_interface_forward(encoder_cls: type[PreisachEncoder]) -> None:
     encoder = _build_encoder(encoder_cls)
@@ -88,12 +88,12 @@ def test_encoder_interface_forward(encoder_cls: type[PreisachEncoder]) -> None:
 
 @pytest.mark.parametrize(
     "encoder_cls",
-    (
+    [
         PreisachLSTMEncoder,
         PreisachGRUEncoder,
         PreisachRNNEncoder,
         PreisachTransformerEncoder,
-    ),
+    ],
 )
 def test_encoder_decoder_model_instantiation_and_forward(
     encoder_cls: type[PreisachEncoder],
@@ -141,13 +141,13 @@ def test_encoder_decoder_model_default_encoder(fake_triangle_mesh: None) -> None
 
 
 @pytest.mark.parametrize(
-    "encoder_class_path,expected_encoder_cls",
-    (
+    ("encoder_class_path", "expected_encoder_cls"),
+    [
         ("sa_preisach.nn.PreisachLSTMEncoder", PreisachLSTMEncoder),
         ("sa_preisach.nn.PreisachGRUEncoder", PreisachGRUEncoder),
         ("sa_preisach.nn.PreisachRNNEncoder", PreisachRNNEncoder),
         ("sa_preisach.nn.PreisachTransformerEncoder", PreisachTransformerEncoder),
-    ),
+    ],
 )
 def test_lightning_parser_instantiates_model_encoder(
     encoder_class_path: str,
@@ -173,21 +173,19 @@ def test_lightning_parser_instantiates_model_encoder(
             "dropout": 0.0,
         }
 
-    config = parser.parse_object(
-        {
-            "model": {
-                "mesh_scale": 0.5,
-                "hidden_dim": 8,
-                "num_layers": 2,
-                "compile_model": False,
-                "mesh_perturbation_std": 0.0,
-                "encoder": {
-                    "class_path": encoder_class_path,
-                    "init_args": encoder_init_args,
-                },
-            }
+    config = parser.parse_object({
+        "model": {
+            "mesh_scale": 0.5,
+            "hidden_dim": 8,
+            "num_layers": 2,
+            "compile_model": False,
+            "mesh_perturbation_std": 0.0,
+            "encoder": {
+                "class_path": encoder_class_path,
+                "init_args": encoder_init_args,
+            },
         }
-    )
+    })
     instantiated = parser.instantiate_classes(config)
     model = typing.cast(EncoderDecoderPreisachNN, instantiated["model"])
 
@@ -199,17 +197,15 @@ def test_lightning_parser_model_default_encoder(fake_triangle_mesh: None) -> Non
     parser = LightningArgumentParser()
     parser.add_lightning_class_args(EncoderDecoderPreisachNN, "model")
 
-    config = parser.parse_object(
-        {
-            "model": {
-                "mesh_scale": 0.5,
-                "hidden_dim": 8,
-                "num_layers": 2,
-                "compile_model": False,
-                "mesh_perturbation_std": 0.0,
-            }
+    config = parser.parse_object({
+        "model": {
+            "mesh_scale": 0.5,
+            "hidden_dim": 8,
+            "num_layers": 2,
+            "compile_model": False,
+            "mesh_perturbation_std": 0.0,
         }
-    )
+    })
     instantiated = parser.instantiate_classes(config)
     model = typing.cast(EncoderDecoderPreisachNN, instantiated["model"])
 
