@@ -16,6 +16,7 @@ from ..models import (
     EncoderDecoderPreisachNN,
     SelfAdaptivePreisach,
 )
+from ..utils import get_states
 
 log = logging.getLogger(__name__)
 
@@ -29,12 +30,14 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         plot_unscaled: bool = False,
         plot_training: bool = False,
         train_plot_interval: int = 100,
+        num_samples: int = 1,
     ) -> None:
         super().__init__()
         self.validate_every_n_epochs = validate_every_n_epochs
         self.hysteron_scatter = hysteron_scatter
         self.plot_training = plot_training
         self.train_plot_interval = train_plot_interval
+        self.num_samples = num_samples
 
     def on_validation_epoch_end(  # type: ignore[override]
         self,
@@ -62,29 +65,146 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
                 outputs = pl_module.validation_outputs_by_dataloader.get(dataloader_idx)
                 if not outputs:
                     continue
+                dataset = typing.cast(
+                    TimeSeriesDataset | EncoderDecoderDataset, dataloader.dataset
+                )
+                hysteresis_output = self._stitched_rollout(pl_module, dataset, outputs)
                 self._log_validation_output(
                     trainer=trainer,
                     pl_module=pl_module,
-                    dataset=typing.cast(
-                        TimeSeriesDataset | EncoderDecoderDataset, dataloader.dataset
-                    ),
+                    dataset=dataset,
                     output=outputs[0],
+                    hysteresis_output=hysteresis_output,
                     tag_prefix=f"validation/{dataloader_idx}",
                 )
         else:
             if not pl_module.validation_outputs:
                 return super().on_validation_epoch_end(trainer, pl_module)
+            dataset = typing.cast(
+                TimeSeriesDataset | EncoderDecoderDataset, dataloaders.dataset
+            )
+            hysteresis_output = self._stitched_rollout(
+                pl_module, dataset, pl_module.validation_outputs
+            )
             self._log_validation_output(
                 trainer=trainer,
                 pl_module=pl_module,
-                dataset=typing.cast(
-                    TimeSeriesDataset | EncoderDecoderDataset, dataloaders.dataset
-                ),
+                dataset=dataset,
                 output=pl_module.validation_outputs[0],
+                hysteresis_output=hysteresis_output,
                 tag_prefix="validation",
             )
 
         return super().on_validation_epoch_end(trainer, pl_module)
+
+    @staticmethod
+    def _concat_outputs(
+        outputs: list[dict[str, torch.Tensor]],
+    ) -> dict[str, torch.Tensor]:
+        if len(outputs) == 1:
+            return outputs[0]
+        seq_keys = ("x", "y", "y_hat")
+        merged: dict[str, torch.Tensor] = {}
+        for key in seq_keys:
+            if key in outputs[0]:
+                merged[key] = torch.cat([o[key] for o in outputs], dim=1)
+        for key in outputs[0]:
+            if key not in merged:
+                merged[key] = outputs[0][key]
+        return merged
+
+    def _stitched_rollout(
+        self,
+        pl_module: SelfAdaptivePreisach
+        | DifferentiablePreisach
+        | DifferentiablePreisachNN
+        | EncoderDecoderPreisachNN,
+        dataset: TimeSeriesDataset | EncoderDecoderDataset,
+        outputs: list[dict[str, torch.Tensor]],
+    ) -> dict[str, torch.Tensor]:
+        """
+        Build a continuous-rollout hysteresis output for the whole validation
+        dataloader. For EncoderDecoderPreisachNN the encoder is run on the
+        first window; subsequent windows reuse the previous window's terminal
+        hysteron state via the model's ``initial_states`` override. This
+        removes the stitching discontinuities that appear when independent
+        per-batch outputs are concatenated.
+        """
+        if not isinstance(pl_module, EncoderDecoderPreisachNN):
+            n = min(self.num_samples, len(outputs))
+            return self._concat_outputs(outputs[:n])
+
+        n_windows = min(self.num_samples, len(dataset))
+        if n_windows <= 0:
+            return outputs[0]
+
+        was_training = pl_module.training
+        pl_module.eval()
+
+        device = next(pl_module.parameters()).device
+        model = pl_module.model
+        temp = pl_module.hparams["temp"]
+
+        y_hat_chunks: list[torch.Tensor] = []
+        y_chunks: list[torch.Tensor] = []
+        x_chunks: list[torch.Tensor] = []
+        prev_states: torch.Tensor | None = None
+        prev_y0: torch.Tensor | None = None
+
+        with torch.no_grad():
+            for i in range(n_windows):
+                sample = dataset[i]
+                enc_in = sample["encoder_input"].unsqueeze(0).to(device)
+                dec_in = sample["decoder_input"].unsqueeze(0).to(device)
+                target = sample["target"].unsqueeze(0).to(device)
+
+                y0 = enc_in[:, -1, 0] if i == 0 else prev_y0
+
+                y_hat, density, _m, states_used, mesh_coords = model(
+                    encoder_input=enc_in,
+                    decoder_input=dec_in[..., 0:1],
+                    y0=y0,
+                    initial_states=prev_states,
+                    temp=temp,
+                )
+
+                alpha = mesh_coords[0, :, 1].cpu()
+                beta = mesh_coords[0, :, 0].cpu()
+                h_seq = dec_in[0, :, 0].cpu()
+                assert y0 is not None
+                states_seq = get_states(
+                    h=h_seq,
+                    alpha=alpha,
+                    beta=beta,
+                    current_state=states_used[0].cpu(),
+                    current_field=y0[0].cpu(),
+                    temp=temp,
+                    dtype=torch.float32,
+                    training=False,
+                )
+                prev_states = states_seq[-1].unsqueeze(0).to(device)
+                prev_y0 = h_seq[-1].unsqueeze(0).to(device)
+
+                y_hat_chunks.append(y_hat[0].cpu())
+                y_chunks.append(target[0].squeeze(-1).cpu())
+                x_chunks.append(dec_in[0, :, 0].cpu())
+
+        if was_training:
+            pl_module.train()
+
+        y_hat_full = torch.cat(y_hat_chunks).unsqueeze(0)
+        y_full = torch.cat(y_chunks).unsqueeze(0)
+        x_full = torch.cat(x_chunks).unsqueeze(0)
+
+        merged: dict[str, torch.Tensor] = {
+            "x": x_full,
+            "y": y_full,
+            "y_hat": y_hat_full,
+        }
+        for key, value in outputs[0].items():
+            if key not in merged:
+                merged[key] = value
+        return merged
 
     def _log_validation_output(
         self,
@@ -96,13 +216,15 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         | EncoderDecoderPreisachNN,
         dataset: TimeSeriesDataset | EncoderDecoderDataset,
         output: dict[str, torch.Tensor],
+        hysteresis_output: dict[str, torch.Tensor] | None = None,
         tag_prefix: str,
     ) -> None:
         h_transform, b_transform = list(dataset.transforms.values())
 
-        x_sample = output["x"][0]
-        y_sample = output["y"][0]
-        y_hat_sample = output["y_hat"][0]
+        hyst_out = hysteresis_output if hysteresis_output is not None else output
+        x_sample = hyst_out["x"][0]
+        y_sample = hyst_out["y"][0]
+        y_hat_sample = hyst_out["y_hat"][0]
 
         if x_sample.ndim > 1 and x_sample.shape[-1] > 1:
             x_sample = x_sample[..., 0]
@@ -143,21 +265,24 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         plt.close(fig_density)
 
         if isinstance(pl_module, EncoderDecoderPreisachNN):
-            initial_states = output["initial_states"][0].detach().cpu()
-            mesh_coords = output["mesh_coords"][0].detach().cpu()
-            alpha_perturbed = mesh_coords[:, 1]
-            beta_perturbed = mesh_coords[:, 0]
+            n_samples = min(self.num_samples, output["initial_states"].shape[0])
+            for i in range(n_samples):
+                initial_states = output["initial_states"][i].detach().cpu()
+                mesh_coords = output["mesh_coords"][i].detach().cpu()
+                alpha_perturbed = mesh_coords[:, 1]
+                beta_perturbed = mesh_coords[:, 0]
 
-            fig_initial_states = plot_initial_states(
-                alpha_perturbed,
-                beta_perturbed,
-                initial_states,
-            )
-
-            self._log_figure(
-                trainer, fig_initial_states, tag=f"{tag_prefix}/initial_states"
-            )
-            plt.close(fig_initial_states)
+                fig_initial_states = plot_initial_states(
+                    alpha_perturbed,
+                    beta_perturbed,
+                    initial_states,
+                )
+                self._log_figure(
+                    trainer,
+                    fig_initial_states,
+                    tag=f"{tag_prefix}/initial_states_{i}",
+                )
+                plt.close(fig_initial_states)
 
         if self.hysteron_scatter:
             fig_scatter = plot_hysteron_scatter(alpha, beta)
@@ -218,20 +343,22 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         plt.close(fig_hysteresis)
 
         if isinstance(pl_module, EncoderDecoderPreisachNN):
-            initial_states = out["initial_states"][0].detach().cpu()
+            n_samples = min(self.num_samples, out["initial_states"].shape[0])
+            for i in range(n_samples):
+                initial_states = out["initial_states"][i].detach().cpu()
+                mesh_coords = out["mesh_coords"][i].detach().cpu()
+                alpha_perturbed = mesh_coords[:, 1]
+                beta_perturbed = mesh_coords[:, 0]
 
-            mesh_coords = out["mesh_coords"][0].detach().cpu()
-            alpha_perturbed = mesh_coords[:, 1]
-            beta_perturbed = mesh_coords[:, 0]
-
-            fig_initial_states = plot_initial_states(
-                alpha_perturbed,
-                beta_perturbed,
-                initial_states,
-            )
-
-            self._log_figure(trainer, fig_initial_states, tag="train/initial_states")
-            plt.close(fig_initial_states)
+                fig_initial_states = plot_initial_states(
+                    alpha_perturbed,
+                    beta_perturbed,
+                    initial_states,
+                )
+                self._log_figure(
+                    trainer, fig_initial_states, tag=f"train/initial_states_{i}"
+                )
+                plt.close(fig_initial_states)
 
         pl_module.train()
 
