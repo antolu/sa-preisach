@@ -58,7 +58,7 @@ def sweep_left(
 ) -> torch.Tensor:
     return torch.maximum(
         prev_state - switch(beta, h, temp=temp, training=training),
-        beta * -1.0,
+        -torch.ones_like(beta, dtype=beta.dtype, device=beta.device),
     )
 
 
@@ -180,7 +180,9 @@ def get_states(  # noqa: PLR0912, PLR0913
         elif h[i] < h[i - 1]:
             # if the new applied field is less than the old one, sweep left to
             # new applied field
-            states += [sweep_left(h[i], beta, states[i - 1], temp=temp)]
+            states += [
+                sweep_left(h[i], beta, states[i - 1], temp=temp, training=training)
+            ]
         else:
             states += [states[i - 1]]
 
