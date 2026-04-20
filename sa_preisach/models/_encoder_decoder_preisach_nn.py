@@ -15,6 +15,7 @@ from ..nn import (
     PreisachEncoder,
     ResNetMLP,
 )
+from ..priors import DensityPrior
 from ..utils import (
     create_triangle_mesh,
     get_states,
@@ -35,11 +36,10 @@ def phase1_loss(  # noqa: PLR0913
     density: torch.Tensor,
     m_target: torch.Tensor,
     saturation_reg: torch.Tensor,
-    symmetry_reg: torch.Tensor,
+    prior_loss: torch.Tensor,
     *,
     aux_loss_weight: float,
     saturation_reg_weight: float,
-    symmetry_reg_weight: float,
 ) -> dict[str, torch.Tensor]:
     # For any H_last two regions of the Preisach plane (α ≥ β convention) are
     # unambiguous regardless of magnetic history:
@@ -87,7 +87,7 @@ def phase1_loss(  # noqa: PLR0913
         physics_loss
         + aux_loss_weight * aux_loss
         + saturation_reg_weight * saturation_reg
-        + symmetry_reg_weight * symmetry_reg
+        + prior_loss
     )
     return {"loss": loss, "aux_loss": aux_loss, "physics_loss": physics_loss}
 
@@ -99,11 +99,10 @@ def phase2_loss(  # noqa: PLR0913
     initial_states: torch.Tensor,
     m_target: torch.Tensor,
     saturation_reg: torch.Tensor,
-    symmetry_reg: torch.Tensor,
+    prior_loss: torch.Tensor,
     *,
     aux_loss_weight: float,
     saturation_reg_weight: float,
-    symmetry_reg_weight: float,
 ) -> dict[str, torch.Tensor]:
     # Phase 2+: density is being trained, switch to density-weighted mean-field
     #   M_encoder = Σ μ(α,β)·s₀(α,β) / Σ μ(α,β)
@@ -117,7 +116,7 @@ def phase2_loss(  # noqa: PLR0913
         seq_loss
         + aux_loss_weight * aux_loss
         + saturation_reg_weight * saturation_reg
-        + symmetry_reg_weight * symmetry_reg
+        + prior_loss
     )
     return {"loss": loss, "aux_loss": aux_loss, "physics_loss": physics_loss}
 
@@ -505,33 +504,13 @@ class EncoderDecoderPreisachNN(BaseModule):
         gradient_clip_val: float = 1.0,
         aux_loss_weight: float = 1.0,
         saturation_reg_weight: float = 0.1,
-        symmetry_reg_weight: float = 0.0,
+        density_prior: DensityPrior | None = None,
         n_train_samples: int = 0,
         fit_scale_offset: bool = False,
     ) -> None:
-        """
-        Parameters
-        ----------
-        symmetry_reg_weight : float
-            Weight for the Preisach density symmetry regularizer, which enforces
-            μ(β, α) = μ(1-α, 1-β). Only valid for materials with symmetric major
-            hysteresis loops (equal positive and negative saturation). Off by default
-            (0.0) — opt in explicitly and verify your data satisfies this assumption
-            before enabling. Enabling for asymmetric materials will corrupt the density.
-        """
         super().__init__()
-        self.save_hyperparameters(ignore=["encoder"])
-
-        if symmetry_reg_weight > 0.0:
-            import warnings
-
-            warnings.warn(
-                "symmetry_reg_weight > 0: the Preisach density symmetry constraint "
-                "assumes mu(b,a) = mu(1-a,1-b), which is only valid for materials with "
-                "symmetric major hysteresis loops. Disable this for asymmetric materials.",
-                UserWarning,
-                stacklevel=2,
-            )
+        self.save_hyperparameters(ignore=["encoder", "density_prior"])
+        self.density_prior = density_prior
 
         self.model = EncoderDecoderPreisachNNModel(
             mesh_size=mesh_scale,
@@ -706,14 +685,24 @@ class EncoderDecoderPreisachNN(BaseModule):
         # than the saturated boundary; weight is small so it doesn't fight the physics loss.
         saturation_reg = (initial_states**2).mean()
 
-        if self.hparams["symmetry_reg_weight"] > 0.0:
-            mirror_coords = torch.stack(
-                [1.0 - mesh_coords[..., 1], 1.0 - mesh_coords[..., 0]], dim=-1
-            )
-            density_mirror = self.model.density_from_mesh(mirror_coords)
-            symmetry_reg = mse_loss(density, density_mirror.detach())
-        else:
-            symmetry_reg = torch.zeros(1, device=density.device)
+        prior_losses: dict[str, torch.Tensor] = (
+            self.density_prior(mesh_coords, density)
+            if self.density_prior is not None
+            else {}
+        )
+        prior_loss = (
+            sum(prior_losses.values())  # type: ignore[arg-type]
+            if prior_losses
+            else torch.zeros(1, device=density.device)
+        )
+
+        # During phase 1 the density network is not yet trained; expose mock_density
+        # in the output dict so callbacks see a meaningful density instead of noise.
+        density_out = (
+            self.model.mock_density.unsqueeze(0).expand(batch_size, -1)
+            if step < phase1_end
+            else density
+        )
 
         if step < phase1_end:
             out = phase1_loss(
@@ -723,10 +712,9 @@ class EncoderDecoderPreisachNN(BaseModule):
                 density=self.model.mock_density,
                 m_target=m_target,
                 saturation_reg=saturation_reg,
-                symmetry_reg=symmetry_reg,
+                prior_loss=prior_loss,
                 aux_loss_weight=self.hparams["aux_loss_weight"],
                 saturation_reg_weight=self.hparams["saturation_reg_weight"],
-                symmetry_reg_weight=self.hparams["symmetry_reg_weight"],
             )
         else:
             out = phase2_loss(
@@ -736,10 +724,9 @@ class EncoderDecoderPreisachNN(BaseModule):
                 initial_states=initial_states,
                 m_target=m_target,
                 saturation_reg=saturation_reg,
-                symmetry_reg=symmetry_reg,
+                prior_loss=prior_loss,
                 aux_loss_weight=self.hparams["aux_loss_weight"],
                 saturation_reg_weight=self.hparams["saturation_reg_weight"],
-                symmetry_reg_weight=self.hparams["symmetry_reg_weight"],
             )
         loss, aux_loss, physics_loss = out["loss"], out["aux_loss"], out["physics_loss"]
 
@@ -748,11 +735,12 @@ class EncoderDecoderPreisachNN(BaseModule):
             "aux_loss": aux_loss.detach(),
             "physics_loss": physics_loss.detach(),
             "saturation_reg": saturation_reg.detach(),
-            "symmetry_reg": symmetry_reg.detach(),
+            "prior_loss": prior_loss.detach(),
+            "prior_losses": {k: v.detach() for k, v in prior_losses.items()},
             "y_hat": y_hat,
             "y": target_squeezed,
             "x": decoder_input.squeeze(-1),
-            "density": density.detach().clone(),
+            "density": density_out.detach().clone(),
             "initial_states": initial_states.detach().clone(),
             "mesh_coords": mesh_coords.detach().clone(),
         }
@@ -804,9 +792,12 @@ class EncoderDecoderPreisachNN(BaseModule):
             "train/aux_loss": "aux_loss",
             "train/physics_loss": "physics_loss",
             "train/saturation_reg": "saturation_reg",
-            "train/symmetry_reg": "symmetry_reg",
+            "train/prior_loss": "prior_loss",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=True, on_epoch=False)
+
+        for k, v in out["prior_losses"].items():
+            self.log(f"train/prior/{k}", v, on_step=True, on_epoch=False)
 
         self.log(
             "train/m_scale", self.model.m_scale.value, on_step=True, on_epoch=False
