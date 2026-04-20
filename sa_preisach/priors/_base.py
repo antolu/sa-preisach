@@ -5,12 +5,13 @@ import abc
 import torch
 
 
-class DensityPrior(abc.ABC):
+class DensityPrior(torch.nn.Module, abc.ABC):
     def __init__(self, weight: float = 1.0) -> None:
+        super().__init__()
         self.weight = weight
 
     @abc.abstractmethod
-    def __call__(
+    def forward(
         self,
         mesh_coords: torch.Tensor,
         density: torch.Tensor,

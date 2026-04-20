@@ -510,7 +510,6 @@ class EncoderDecoderPreisachNN(BaseModule):
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["encoder", "density_prior"])
-        self.density_prior = density_prior
 
         self.model = EncoderDecoderPreisachNNModel(
             mesh_size=mesh_scale,
@@ -525,7 +524,22 @@ class EncoderDecoderPreisachNN(BaseModule):
             fit_scale_offset=fit_scale_offset,
         )
 
+        # Register prior as submodule so it moves to the correct device with the model.
+        # SymmetryDensityPrior needs the density network injected after model construction.
+        self.model.density_prior = density_prior
+        if density_prior is not None:
+            self._inject_density_net(density_prior)
+
         self.automatic_optimization = False
+
+    def _inject_density_net(self, prior: DensityPrior) -> None:
+        from ..priors import CompositeDensityPrior, SymmetryDensityPrior
+
+        if isinstance(prior, SymmetryDensityPrior):
+            prior.density_net = self.model.density
+        elif isinstance(prior, CompositeDensityPrior):
+            for p in prior.priors:
+                self._inject_density_net(p)
 
     def on_fit_start(self) -> None:
         log.info(f"Number of mesh points: {self.model.n_mesh_points}")
@@ -686,8 +700,8 @@ class EncoderDecoderPreisachNN(BaseModule):
         saturation_reg = (initial_states**2).mean()
 
         prior_losses: dict[str, torch.Tensor] = (
-            self.density_prior(mesh_coords, density)
-            if self.density_prior is not None
+            self.model.density_prior(mesh_coords, density)
+            if self.model.density_prior is not None
             else {}
         )
         prior_loss = (

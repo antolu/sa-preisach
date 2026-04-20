@@ -18,7 +18,7 @@ class DiagonalDensityPrior(DensityPrior):
     def __init__(self, weight: float = 1.0) -> None:
         super().__init__(weight)
 
-    def __call__(
+    def forward(
         self,
         mesh_coords: torch.Tensor,
         density: torch.Tensor,
