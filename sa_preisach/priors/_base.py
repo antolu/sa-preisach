@@ -6,6 +6,9 @@ import torch
 
 
 class DensityPrior(abc.ABC):
+    def __init__(self, weight: float = 1.0) -> None:
+        self.weight = weight
+
     @abc.abstractmethod
     def __call__(
         self,

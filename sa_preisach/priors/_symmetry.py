@@ -28,7 +28,9 @@ class SymmetryDensityPrior(DensityPrior):
     def __init__(
         self,
         density_fn: torch.nn.Module,
+        weight: float = 1.0,
     ) -> None:
+        super().__init__(weight)
         warnings.warn(
             "SymmetryDensityPrior assumes mu(b,a) = mu(1-a,1-b), which is only valid "
             "for materials with symmetric major hysteresis loops.",
@@ -51,4 +53,4 @@ class SymmetryDensityPrior(DensityPrior):
         loss = (
             (weights * (density - density_mirror) ** 2).sum(dim=-1) / weights_sum
         ).mean()
-        return {"symmetry": loss}
+        return {"symmetry": self.weight * loss}

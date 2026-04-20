@@ -15,6 +15,9 @@ class DiagonalDensityPrior(DensityPrior):
     mass actually exists, not diluted by near-zero regions.
     """
 
+    def __init__(self, weight: float = 1.0) -> None:
+        super().__init__(weight)
+
     def __call__(
         self,
         mesh_coords: torch.Tensor,
@@ -25,4 +28,4 @@ class DiagonalDensityPrior(DensityPrior):
         dist_sq = (alpha - beta) ** 2
         density_sum = density.sum(dim=-1, keepdim=True).clamp(min=1e-8)
         loss = ((density * dist_sq).sum(dim=-1) / density_sum.squeeze(-1)).mean()
-        return {"diagonal": loss}
+        return {"diagonal": self.weight * loss}
