@@ -29,6 +29,20 @@ MIN_VARIANCE_THRESHOLD = 1e-6
 
 
 class EncoderDecoderPreisachNNModel(torch.nn.Module):
+    """
+    Neural Preisach model with encoder-decoder architecture.
+
+    All inputs and outputs operate on MinMax-normalized quantities:
+      - H_norm ∈ [0, 1]: applied field, mapped from physical H via MinMaxScaler
+      - B_norm ∈ [0, 1]: flux density, mapped from physical B via MinMaxScaler
+      - M ∈ [-1, 1]: Preisach magnetization, M = Σ μ(α,β)·s(α,β) / Σ μ(α,β)
+        where s ∈ {-1, +1} are hysteron states and μ > 0 is the density
+
+    The constitutive relation (with h_scale=0 for soft magnets where μ₀H ≪ B):
+      B_norm = m_scale · M + m_offset
+    With m_scale=0.5, m_offset=0.5 this maps M ∈ [-1,1] → B_norm ∈ [0,1].
+    """
+
     def __init__(  # noqa: PLR0913
         self,
         *,
@@ -42,6 +56,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         mesh_density_function: typing.Literal["constant", "default", "exponential"]
         | typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray] = "default",
         mesh_perturbation_std: float = 0.01,
+        fit_scale_offset: bool = False,
     ) -> None:
         super().__init__()
 
@@ -74,22 +89,27 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             torch.nn.Sigmoid() if normalized_density else torch.nn.Softplus()
         )
 
-        # Separate scale parameters for H (applied field) and M (magnetization)
-        # B = h_scale * H + m_scale * M + offset
+        # Constitutive relation: B_norm = h_scale · H_norm + m_scale · M + m_offset
+        # For soft magnetic materials (ARMCO iron), μ₀H ≪ B so h_scale ≈ 0.
+        # With M ∈ [-1,1], m_scale=0.5 and m_offset=0.5 give:
+        #   M = -1 (neg. saturation) → B_norm = 0
+        #   M = +1 (pos. saturation) → B_norm = 1
+        # fit_scale_offset=False keeps these frozen at analytical values until
+        # the encoder is stable enough to not fight the scale fitting.
         self.h_scale = GPyConstrainedParameter(
             torch.tensor(0.0),
             constraint=gpytorch.constraints.Interval(*m_scale_bounds),
-            requires_grad=False,
+            requires_grad=fit_scale_offset,
         )
         self.m_scale = GPyConstrainedParameter(
-            torch.tensor(1.0),
+            torch.tensor(0.5),
             constraint=gpytorch.constraints.Interval(*m_scale_bounds),
-            requires_grad=True,
+            requires_grad=fit_scale_offset,
         )
         self.m_offset = GPyConstrainedParameter(
-            torch.tensor(0.0),
+            torch.tensor(0.5),
             constraint=gpytorch.constraints.Interval(*offset_bounds),
-            requires_grad=True,
+            requires_grad=fit_scale_offset,
         )
 
     def _perturb_mesh(self, mesh_coords: torch.Tensor, training: bool) -> torch.Tensor:  # noqa: FBT001
@@ -110,7 +130,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             Perturbed mesh coordinates with shape [batch_size, n_mesh_points, 2]
             satisfying 0 <= alpha <= beta <= 1
         """
-        if not training or self.mesh_perturbation_std == 0.0:
+        if not training or np.isclose(self.mesh_perturbation_std, 0.0):
             return mesh_coords
 
         # Sample Gaussian noise for each (batch, mesh_point, coordinate)
@@ -136,6 +156,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         decoder_input: torch.Tensor,
         encoder_mask: torch.Tensor | None = None,
         y0: torch.Tensor | None = None,
+        initial_states: torch.Tensor | None = None,
         *,
         temp: float = 1e-3,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -145,18 +166,33 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         Parameters
         ----------
         encoder_input : torch.Tensor
-            Historical H/B sequences of shape [batch_size, ctxt_seq_len, sequence_features]
+            Historical [H_norm, B_norm] sequences,
+            shape [batch_size, ctxt_seq_len, 2].
+            Feature 0 = H_norm (normalized applied field),
+            Feature 1 = B_norm (normalized flux density).
         decoder_input : torch.Tensor
-            Current H sequences of shape [batch_size, tgt_seq_len, 1]
+            Future H_norm sequence, shape [batch_size, tgt_seq_len, 1]
         encoder_mask : torch.Tensor, optional
-            Attention mask for encoder sequences of shape [batch_size, ctxt_seq_len]
+            Padding mask for encoder, shape [batch_size, ctxt_seq_len]
         y0 : torch.Tensor, optional
-            Initial field values of shape [batch_size, 1]. If None, uses first decoder input.
+            Last H_norm value before decoder sequence, shape [batch_size].
+            Used to determine initial sweep direction in the Preisach plane.
+            If None, extracted from encoder_input[:, -1, 0].
+        initial_states : torch.Tensor, optional
+            Override for encoder-produced initial hysteron states,
+            shape [batch_size, n_mesh_points]. When provided the encoder
+            is bypassed and mesh perturbation is disabled to keep states
+            aligned with the mesh. Intended for multi-window rollouts
+            where the terminal state of the previous window is fed in.
 
         Returns
         -------
         tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
-            B predictions, density weights, unscaled M, initial states, mesh coordinates
+            - B_norm predictions [batch_size, tgt_seq_len]
+            - density μ(α,β) [batch_size, n_mesh_points]
+            - M (unscaled magnetization) [batch_size, tgt_seq_len]
+            - initial hysteron states s₀ [batch_size, n_mesh_points]
+            - mesh coordinates (β,α) [batch_size, n_mesh_points, 2]
         """
         batch_size = encoder_input.shape[0]
 
@@ -165,34 +201,47 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             batch_size
         )  # [batch_size, n_mesh_points, 2]
 
-        # Perturb mesh during training for density network regularization
-        mesh_coords = self._perturb_mesh(mesh_coords, self.training)
+        # Perturb mesh during training for density network regularization.
+        # Skip perturbation when initial_states are provided externally: a
+        # caller-supplied state vector is indexed against self.base_mesh, so
+        # perturbing here would desync state indices from hysteron coordinates.
+        training_and_perturb = self.training and initial_states is None
+        mesh_coords = self._perturb_mesh(mesh_coords, training_and_perturb)
 
         # Compute density weights first
         density = self.density_from_mesh(
             mesh_coords, beta=None
         )  # [batch_size, n_mesh_points]
 
-        # Concatenate density to mesh coordinates for encoder
-        mesh_coords_with_density = torch.cat(
-            [mesh_coords, density.unsqueeze(-1)], dim=-1
-        )  # [batch_size, n_mesh_points, 3]
+        if initial_states is None:
+            # Concatenate density to mesh coordinates for encoder
+            mesh_coords_with_density = torch.cat(
+                [mesh_coords, density.unsqueeze(-1)], dim=-1
+            )  # [batch_size, n_mesh_points, 3]
 
-        # Encode initial hysteron states from historical sequences
-        initial_states = self.encoder(
-            sequence=encoder_input,
-            mesh_features=mesh_coords_with_density,
-            sequence_mask=encoder_mask,
-        )  # [batch_size, n_mesh_points]
+            # Encode initial hysteron states from historical sequences
+            initial_states = self.encoder(
+                sequence=encoder_input,
+                mesh_features=mesh_coords_with_density,
+                sequence_mask=encoder_mask,
+            )  # [batch_size, n_mesh_points]
+        elif initial_states.shape != (batch_size, self.n_mesh_points):
+            msg = (
+                f"initial_states shape {tuple(initial_states.shape)} does not "
+                f"match (batch_size, n_mesh_points) = ({batch_size}, {self.n_mesh_points})"
+            )
+            raise ValueError(msg)
 
-        # Get initial field values - ensure always has batch dimension
-        y0 = encoder_input[:, -1, -1] if y0 is None else y0.squeeze(-1)  # [batch_size]
+        # y0 = last H_norm from encoder context, used to determine sweep direction
+        # in get_states: if decoder h[0] > y0, sweep up (activate hysterons),
+        # if h[0] < y0, sweep left (deactivate hysterons)
+        y0 = encoder_input[:, -1, 0] if y0 is None else y0.squeeze(-1)  # [batch_size]
 
         # Ensure y0 always has batch dimension for vmap compatibility
         if y0.dim() == 0:  # scalar case when batch_size=1
             y0 = y0.unsqueeze(0)  # [1]
 
-        # Compute hysteron states for decoder sequence
+        # H_norm values for the decoder (the "applied field" driving the Preisach model)
         h = decoder_input.squeeze(-1)  # [batch_size, tgt_seq_len]
         alpha = mesh_coords[..., 1]  # [batch_size, n_mesh_points]
         beta = mesh_coords[..., 0]  # [batch_size, n_mesh_points]
@@ -230,12 +279,12 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         # Normalize density once (constant across time)
         density_sum = density.sum(dim=-1, keepdim=True)  # [batch_size, 1]
 
-        # Compute magnetization for each time step
+        # M = Σ μ(α,β)·s(α,β) / Σ μ(α,β), where s ∈ [-1,+1] per hysteron
         m = (
             torch.sum(density.unsqueeze(1) * states, dim=-1) / density_sum
         )  # [batch_size, tgt_seq_len]
 
-        # Apply physics-informed scaling: B = h_scale * H + m_scale * M + offset
+        # B_norm = h_scale · H_norm + m_scale · M + m_offset
         b_out = self.h_scale.value * h + self.m_scale.value * m + self.m_offset.value
 
         return (
@@ -244,7 +293,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             m,
             initial_states,
             mesh_coords,
-        )  # Return B, density, unscaled M, initial states, and mesh coords
+        )  # (B_norm, μ, M, s₀, mesh)
 
     def get_batched_mesh_coords(self, batch_size: int) -> torch.Tensor:
         """
@@ -300,6 +349,7 @@ class EncoderDecoderPreisachNN(BaseModule):
         num_layers: int = 3,
         temp: float = 1e-3,
         lr: float = 1e-2,
+        lr_encoder: float = 1e-3,
         lr_scale: float = 1e-3,
         lr_step_interval: int = 100,
         lr_gamma: float = 0.9,
@@ -314,7 +364,10 @@ class EncoderDecoderPreisachNN(BaseModule):
         encoder_fit_steps: int = 0,
         density_fit_steps: int = 0,
         gradient_clip_val: float = 1.0,
+        aux_loss_weight: float = 1.0,
+        saturation_reg_weight: float = 0.1,
         n_train_samples: int = 0,
+        fit_scale_offset: bool = False,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["encoder"])
@@ -329,9 +382,9 @@ class EncoderDecoderPreisachNN(BaseModule):
             normalized_density=normalized_density,
             mesh_density_function=mesh_density_function,
             mesh_perturbation_std=mesh_perturbation_std,
+            fit_scale_offset=fit_scale_offset,
         )
 
-        self._scale_offset_initialized = False
         self.automatic_optimization = False
 
     def on_fit_start(self) -> None:
@@ -406,6 +459,7 @@ class EncoderDecoderPreisachNN(BaseModule):
         decoder_input: torch.Tensor,
         encoder_mask: torch.Tensor | None = None,
         y0: torch.Tensor | None = None,
+        initial_states: torch.Tensor | None = None,
         *,
         temp: float = 1e-3,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -414,6 +468,7 @@ class EncoderDecoderPreisachNN(BaseModule):
             decoder_input=decoder_input[..., 0:1],
             encoder_mask=encoder_mask,
             y0=y0,
+            initial_states=initial_states,
             temp=temp,
         )
 
@@ -424,56 +479,136 @@ class EncoderDecoderPreisachNN(BaseModule):
     ) -> dict[str, torch.Tensor]:
         assert "target" in batch
 
-        encoder_input = batch["encoder_input"]  # [batch_size, ctxt_seq_len, features]
-        decoder_input = batch["decoder_input"]  # [batch_size, tgt_seq_len, features]
-        target = batch["target"]  # [batch_size, tgt_seq_len, 1]
+        encoder_input = batch["encoder_input"]
+        decoder_input = batch["decoder_input"]
+        target = batch["target"]
+        batch_size = encoder_input.shape[0]
 
-        # Get sequence lengths and flatten if needed
         encoder_lengths = batch.get("encoder_lengths")
         if encoder_lengths is not None:
-            encoder_lengths = encoder_lengths[..., 0]  # (B, 1) -> (B,)
+            encoder_lengths = encoder_lengths[..., 0]
 
-            # Create simple padding mask using TransformerTF utility
             encoder_mask = create_mask(
                 size=encoder_input.shape[1],
                 lengths=encoder_lengths,
                 alignment="left",
-                inverse=True,  # True=valid positions, False=padded
+                inverse=True,
             )
         else:
             encoder_mask = batch.get("encoder_mask")
             if encoder_mask is not None:
                 encoder_mask = encoder_mask.bool()
 
-        # Get initial field from last encoder value (y0=None lets model use encoder_input[:, -1, -1])
-        y_hat, density, m_unscaled, initial_states, mesh_coords = self(
+        # encoder_input features: [H_norm, B_norm]
+        # y0 = last H_norm: determines Preisach sweep direction for first decoder step
+        # b_last = last B_norm: used to derive M_target for the auxiliary loss
+        if encoder_lengths is not None:
+            batch_indices = torch.arange(batch_size, device=encoder_input.device)
+            last_indices = (encoder_lengths - 1).long()
+            y0 = encoder_input[batch_indices, last_indices, 0]
+            b_last = encoder_input[batch_indices, last_indices, -1]
+        else:
+            y0 = encoder_input[:, -1, 0]
+            b_last = encoder_input[:, -1, -1]
+
+        y_hat, density, _m_unscaled, initial_states, mesh_coords = self(
             encoder_input=encoder_input,
             decoder_input=decoder_input,
             encoder_mask=encoder_mask,
-            y0=None,
+            y0=y0,
             temp=self.hparams["temp"],
         )
 
-        if self.training and not self._scale_offset_initialized:
-            target_squeezed = target.squeeze(-1)
-            self._initialize_scale_offset(m_unscaled, target_squeezed)
-            self._scale_offset_initialized = True
+        target_squeezed = target.squeeze(-1)
 
-        # Compute loss
-        target_squeezed = target.squeeze(-1)  # [batch_size, tgt_seq_len]
-
-        # During encoder-only fitting, only compute loss on first timestep
+        # Invert B_norm = m_scale·M + m_offset → M_target = (B_norm - m_offset) / m_scale
+        # Must use current parameter values so this stays correct when fit_scale_offset=True
+        # and the scale/offset drift from their initial 0.5/0.5 values.
+        m_target = (b_last - self.model.m_offset.value) / self.model.m_scale.value
         step = self.global_step if self.training else float("inf")
-        phase1_end = self.hparams["linear_fit_steps"]
-        phase2_end = phase1_end + self.hparams["encoder_fit_steps"]
+        phase1_end = self.hparams["encoder_fit_steps"]
 
-        if step >= phase1_end and step < phase2_end:
-            loss = mse_loss(y_hat[:, 0], target_squeezed[:, 0])
+        # Saturation regularizer: penalise states near ±1 in all phases.
+        # Without this the encoder can collapse to all-+1 or all-−1, which is a
+        # degenerate local minimum that satisfies most aggregated losses trivially.
+        # mean(s²) pushes states toward 0 (the interior of the Preisach plane) rather
+        # than the saturated boundary; weight is small so it doesn't fight the physics loss.
+        saturation_reg = (initial_states**2).mean()
+
+        if step < phase1_end:
+            # Physics-based per-hysteron loss (primary) + mean-field (coarse regularizer).
+            #
+            # For any H_last two regions of the Preisach plane (α ≥ β convention) are
+            # unambiguous regardless of magnetic history:
+            #   β < H_last  → deactivation threshold is below current field → hysteron ON  (+1)
+            #   α > H_last  → activation threshold is above current field   → hysteron OFF (-1)
+            # Hysterons where β ≥ H_last and α ≤ H_last are history-dependent → masked out.
+            h_last = y0.unsqueeze(-1)  # [batch, 1]  (H_norm at end of context)
+            alpha = mesh_coords[
+                ..., 1
+            ]  # [batch, n_mesh]  (upper / switch-up threshold)
+            beta = mesh_coords[
+                ..., 0
+            ]  # [batch, n_mesh]  (lower / switch-down threshold)
+
+            mask_pos = beta < h_last  # unambiguously ON
+            mask_neg = alpha > h_last  # unambiguously OFF
+
+            physics_target = torch.where(
+                mask_pos,
+                torch.ones_like(beta),
+                torch.where(
+                    mask_neg,
+                    -torch.ones_like(alpha),
+                    torch.zeros_like(beta),  # history-dependent, masked out below
+                ),
+            )
+
+            # Stratified loss: average the +1-region loss and the -1-region loss with equal
+            # weight, regardless of how many hysterons fall in each region.  Without this,
+            # a high H_last makes the +1 region much larger, giving a dominant +1 gradient
+            # that drives the encoder toward full saturation.
+            loss_pos = (
+                mse_loss(initial_states[mask_pos], physics_target[mask_pos])
+                if mask_pos.any()
+                else torch.tensor(0.0, device=initial_states.device)
+            )
+            loss_neg = (
+                mse_loss(initial_states[mask_neg], physics_target[mask_neg])
+                if mask_neg.any()
+                else torch.tensor(0.0, device=initial_states.device)
+            )
+            physics_loss = 0.5 * (loss_pos + loss_neg)
+
+            # Mean-field as coarse regularizer: aggregate M should match observed B_last
+            m_initial = initial_states.mean(dim=-1)
+            aux_loss = mse_loss(m_initial, m_target)
+
+            loss = (
+                physics_loss
+                + self.hparams["aux_loss_weight"] * aux_loss
+                + self.hparams["saturation_reg_weight"] * saturation_reg
+            )
         else:
-            loss = mse_loss(y_hat, target_squeezed)
+            # Phase 2+: density is being trained, switch to density-weighted mean-field
+            #   M_encoder = Σ μ(α,β)·s₀(α,β) / Σ μ(α,β)
+            density_sum = density.sum(dim=-1)
+            m_initial = (density * initial_states).sum(dim=-1) / density_sum
+            aux_loss = mse_loss(m_initial, m_target)
+            physics_loss = torch.zeros(1, device=initial_states.device)
+
+            seq_loss = mse_loss(y_hat, target_squeezed)
+            loss = (
+                seq_loss
+                + self.hparams["aux_loss_weight"] * aux_loss
+                + self.hparams["saturation_reg_weight"] * saturation_reg
+            )
 
         return {
             "loss": loss,
+            "aux_loss": aux_loss.detach(),
+            "physics_loss": physics_loss.detach(),
+            "saturation_reg": saturation_reg.detach(),
             "y_hat": y_hat,
             "y": target_squeezed,
             "x": decoder_input.squeeze(-1),
@@ -482,58 +617,49 @@ class EncoderDecoderPreisachNN(BaseModule):
             "mesh_coords": mesh_coords.detach().clone(),
         }
 
-    def training_step(  # noqa: PLR0915, PLR0912
+    def training_step(
         self, batch: EncoderDecoderTargetSample[torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
-        optimizer_encoder, optimizer_density, optimizer_offset, optimizer_m_scale = (
-            self.optimizers()
-        )
+        optimizers = self.optimizers()
+        optimizer_encoder, optimizer_density = optimizers[0], optimizers[1]
+        optimizer_scale = optimizers[2] if self.hparams["fit_scale_offset"] else None
 
         out = self.common_step(batch, batch_idx)
         loss = out["loss"]
 
         step = self.global_step
-        phase1_end = self.hparams["linear_fit_steps"]
-        phase2_end = phase1_end + self.hparams["encoder_fit_steps"]
-        phase3_end = phase2_end + self.hparams["density_fit_steps"]
+        phase1_end = self.hparams["encoder_fit_steps"]
+        phase2_end = phase1_end + self.hparams["density_fit_steps"]
 
         optimizer_encoder.zero_grad()
         optimizer_density.zero_grad()
-        optimizer_offset.zero_grad()
-        optimizer_m_scale.zero_grad()
+        if optimizer_scale is not None:
+            optimizer_scale.zero_grad()
 
         self.manual_backward(loss)
 
         if step < phase1_end:
-            optimizer_m_scale.step()
-            optimizer_offset.step()
-        elif step < phase2_end:
             self.clip_gradients(
                 optimizer_encoder, gradient_clip_val=self.hparams["gradient_clip_val"]
             )
             optimizer_encoder.step()
-        elif step < phase3_end:
-            optimizer_m_scale.step()
-            optimizer_offset.step()
+        elif step < phase2_end:
+            self.clip_gradients(
+                optimizer_encoder, gradient_clip_val=self.hparams["gradient_clip_val"]
+            )
             self.clip_gradients(
                 optimizer_density, gradient_clip_val=self.hparams["gradient_clip_val"]
             )
+            optimizer_encoder.step()
             optimizer_density.step()
+            if optimizer_scale is not None:
+                self.clip_gradients(
+                    optimizer_scale, gradient_clip_val=self.hparams["gradient_clip_val"]
+                )
+                optimizer_scale.step()
         else:
-            optimizer_m_scale.step()
-            optimizer_offset.step()
-            if step == phase3_end:
-                for param_group in optimizer_m_scale.param_groups:
-                    param_group["lr"] /= 10.0
-                for param_group in optimizer_offset.param_groups:
-                    param_group["lr"] /= 10.0
-
-            step_offset = step - phase3_end
-            cycle_position = step_offset % 3
-
-            if cycle_position == 0:
-                pass
-            elif cycle_position == 1:
+            step_offset = step - phase2_end
+            if step_offset % 2 == 0:
                 self.clip_gradients(
                     optimizer_encoder,
                     gradient_clip_val=self.hparams["gradient_clip_val"],
@@ -545,34 +671,29 @@ class EncoderDecoderPreisachNN(BaseModule):
                     gradient_clip_val=self.hparams["gradient_clip_val"],
                 )
                 optimizer_density.step()
+                if optimizer_scale is not None:
+                    self.clip_gradients(
+                        optimizer_scale,
+                        gradient_clip_val=self.hparams["gradient_clip_val"],
+                    )
+                    optimizer_scale.step()
 
         if self.trainer.is_last_batch:
-            (
-                scheduler_encoder,
-                scheduler_density,
-                scheduler_offset,
-                scheduler_m_scale,
-            ) = self.lr_schedulers()
-            scheduler_m_scale.step()
-            scheduler_offset.step()
-            if step < phase1_end:
-                pass
-            elif step < phase2_end:
-                scheduler_encoder.step()
-            elif step < phase3_end:
-                scheduler_density.step()
-            else:
-                scheduler_encoder.step()
-                scheduler_density.step()
+            schedulers = self.lr_schedulers()
+            schedulers[0].step()  # encoder
+            if step >= phase1_end:
+                schedulers[1].step()  # density
+                if self.hparams["fit_scale_offset"]:
+                    schedulers[2].step()  # scale/offset
 
         for tag, key in {
             "train/loss": "loss",
+            "train/aux_loss": "aux_loss",
+            "train/physics_loss": "physics_loss",
+            "train/saturation_reg": "saturation_reg",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=True, on_epoch=False)
 
-        self.log(
-            "train/h_scale", self.model.h_scale.value, on_step=True, on_epoch=False
-        )
         self.log(
             "train/m_scale", self.model.m_scale.value, on_step=True, on_epoch=False
         )
@@ -594,6 +715,7 @@ class EncoderDecoderPreisachNN(BaseModule):
 
         for tag, key in {
             "validation/loss": "loss",
+            "validation/aux_loss": "aux_loss",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=False, on_epoch=True)
 
@@ -606,7 +728,7 @@ class EncoderDecoderPreisachNN(BaseModule):
             [
                 {
                     "params": self.model.encoder.parameters(),
-                    "lr": self.hparams["lr"],
+                    "lr": self.hparams["lr_encoder"],
                     "weight_decay": 1e-4,
                 },
             ],
@@ -622,19 +744,6 @@ class EncoderDecoderPreisachNN(BaseModule):
             ],
         )
 
-        optimizer_offset = torch.optim.AdamW(
-            [
-                {"params": self.model.h_scale.parameters()},
-                {"params": self.model.m_offset.parameters()},
-            ],
-            lr=self.hparams["lr_scale"],
-        )
-
-        optimizer_m_scale = torch.optim.AdamW(
-            [{"params": self.model.m_scale.parameters()}],
-            lr=self.hparams["lr_scale"],
-        )
-
         scheduler_encoder = torch.optim.lr_scheduler.StepLR(
             optimizer_encoder,
             step_size=self.hparams["lr_step_interval"],
@@ -647,21 +756,26 @@ class EncoderDecoderPreisachNN(BaseModule):
             gamma=self.hparams["lr_gamma"],
         )
 
-        scheduler_offset = torch.optim.lr_scheduler.StepLR(
-            optimizer_offset,
-            step_size=self.hparams["lr_step_interval"],
-            gamma=self.hparams["lr_gamma"],
-        )
+        optimizers = [optimizer_encoder, optimizer_density]
+        schedulers = [scheduler_encoder, scheduler_density]
 
-        scheduler_m_scale = torch.optim.lr_scheduler.StepLR(
-            optimizer_m_scale,
-            step_size=self.hparams["lr_step_interval"],
-            gamma=self.hparams["lr_gamma"],
-        )
+        if self.hparams["fit_scale_offset"]:
+            # Separate optimizer for h_scale, m_scale, m_offset so they can
+            # be clipped and stepped independently from encoder/density.
+            scale_params = [
+                self.model.h_scale.raw_parameter,
+                self.model.m_scale.raw_parameter,
+                self.model.m_offset.raw_parameter,
+            ]
+            optimizer_scale = torch.optim.AdamW(
+                scale_params, lr=self.hparams["lr_scale"], weight_decay=0.0
+            )
+            scheduler_scale = torch.optim.lr_scheduler.StepLR(
+                optimizer_scale,
+                step_size=self.hparams["lr_step_interval"],
+                gamma=self.hparams["lr_gamma"],
+            )
+            optimizers.append(optimizer_scale)
+            schedulers.append(scheduler_scale)
 
-        return [
-            optimizer_encoder,
-            optimizer_density,
-            optimizer_offset,
-            optimizer_m_scale,
-        ], [scheduler_encoder, scheduler_density, scheduler_offset, scheduler_m_scale]
+        return optimizers, schedulers
