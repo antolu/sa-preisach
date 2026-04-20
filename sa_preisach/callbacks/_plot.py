@@ -168,9 +168,10 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
                     temp=temp,
                 )
 
+                dec_len = int(sample["decoder_lengths"].item())
                 alpha = mesh_coords[0, :, 1].cpu()
                 beta = mesh_coords[0, :, 0].cpu()
-                h_seq = dec_in[0, :, 0].cpu()
+                h_seq = dec_in[0, :dec_len, 0].cpu()
                 assert y0 is not None
                 states_seq = get_states(
                     h=h_seq,
@@ -185,16 +186,23 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
                 prev_states = states_seq[-1].unsqueeze(0).to(device)
                 prev_y0 = h_seq[-1].unsqueeze(0).to(device)
 
-                y_hat_chunks.append(y_hat[0].cpu())
-                y_chunks.append(target[0].squeeze(-1).cpu())
-                x_chunks.append(dec_in[0, :, 0].cpu())
+                y_hat_chunks.append(y_hat[0, :dec_len].cpu())
+                y_chunks.append(target[0, :dec_len].squeeze(-1).cpu())
+                x_chunks.append(dec_in[0, :dec_len, 0].cpu())
 
         if was_training:
             pl_module.train()
 
-        y_hat_full = torch.cat(y_hat_chunks).unsqueeze(0)
-        y_full = torch.cat(y_chunks).unsqueeze(0)
-        x_full = torch.cat(x_chunks).unsqueeze(0)
+        def _cat_with_nan(chunks: list[torch.Tensor]) -> torch.Tensor:
+            if len(chunks) == 1:
+                return chunks[0]
+            nan = torch.full((1,), float("nan"))
+            parts = [c for chunk in chunks for c in (chunk, nan)][:-1]
+            return torch.cat(parts)
+
+        y_hat_full = _cat_with_nan(y_hat_chunks).unsqueeze(0)
+        y_full = _cat_with_nan(y_chunks).unsqueeze(0)
+        x_full = _cat_with_nan(x_chunks).unsqueeze(0)
 
         merged: dict[str, torch.Tensor] = {
             "x": x_full,

@@ -25,6 +25,7 @@ Documentation contents
     :maxdepth: 1
 
     usage
+    encoder_decoder_preisach
 
 .. toctree::
     :caption: Reference docs

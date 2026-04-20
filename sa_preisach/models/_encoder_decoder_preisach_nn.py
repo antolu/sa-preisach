@@ -28,6 +28,133 @@ CPU_DEVICE = torch.device("cpu")
 MIN_VARIANCE_THRESHOLD = 1e-6
 
 
+def phase1_loss(  # noqa: PLR0913
+    initial_states: torch.Tensor,
+    y0: torch.Tensor,
+    mesh_coords: torch.Tensor,
+    density: torch.Tensor,
+    m_target: torch.Tensor,
+    saturation_reg: torch.Tensor,
+    symmetry_reg: torch.Tensor,
+    *,
+    aux_loss_weight: float,
+    saturation_reg_weight: float,
+    symmetry_reg_weight: float,
+) -> dict[str, torch.Tensor]:
+    # For any H_last two regions of the Preisach plane (α ≥ β convention) are
+    # unambiguous regardless of magnetic history:
+    #   β < H_last  → deactivation threshold is below current field → hysteron ON  (+1)
+    #   α > H_last  → activation threshold is above current field   → hysteron OFF (-1)
+    # Hysterons where β ≥ H_last and α ≤ H_last are history-dependent → masked out.
+    h_last = y0.unsqueeze(-1)  # [batch, 1]  (H_norm at end of context)
+    alpha = mesh_coords[..., 1]  # [batch, n_mesh]  (upper / switch-up threshold)
+    beta = mesh_coords[..., 0]  # [batch, n_mesh]  (lower / switch-down threshold)
+
+    mask_pos = beta < h_last  # unambiguously ON
+    mask_neg = alpha > h_last  # unambiguously OFF
+
+    physics_target = torch.where(
+        mask_pos,
+        torch.ones_like(beta),
+        torch.where(
+            mask_neg,
+            -torch.ones_like(alpha),
+            torch.zeros_like(beta),  # history-dependent, masked out below
+        ),
+    )
+
+    # Stratified loss: average the +1-region loss and the -1-region loss with equal
+    # weight, regardless of how many hysterons fall in each region.  Without this,
+    # a high H_last makes the +1 region much larger, giving a dominant +1 gradient
+    # that drives the encoder toward full saturation.
+    loss_pos = (
+        mse_loss(initial_states[mask_pos], physics_target[mask_pos])
+        if mask_pos.any()
+        else torch.tensor(0.0, device=initial_states.device)
+    )
+    loss_neg = (
+        mse_loss(initial_states[mask_neg], physics_target[mask_neg])
+        if mask_neg.any()
+        else torch.tensor(0.0, device=initial_states.device)
+    )
+    physics_loss = 0.5 * (loss_pos + loss_neg)
+
+    density_sum = density.sum(dim=-1)
+    m_initial = (density * initial_states).sum(dim=-1) / density_sum
+    aux_loss = mse_loss(m_initial, m_target)
+
+    loss = (
+        physics_loss
+        + aux_loss_weight * aux_loss
+        + saturation_reg_weight * saturation_reg
+        + symmetry_reg_weight * symmetry_reg
+    )
+    return {"loss": loss, "aux_loss": aux_loss, "physics_loss": physics_loss}
+
+
+def phase2_loss(  # noqa: PLR0913
+    y_hat: torch.Tensor,
+    target_squeezed: torch.Tensor,
+    density: torch.Tensor,
+    initial_states: torch.Tensor,
+    m_target: torch.Tensor,
+    saturation_reg: torch.Tensor,
+    symmetry_reg: torch.Tensor,
+    *,
+    aux_loss_weight: float,
+    saturation_reg_weight: float,
+    symmetry_reg_weight: float,
+) -> dict[str, torch.Tensor]:
+    # Phase 2+: density is being trained, switch to density-weighted mean-field
+    #   M_encoder = Σ μ(α,β)·s₀(α,β) / Σ μ(α,β)
+    density_sum = density.sum(dim=-1)
+    m_initial = (density * initial_states).sum(dim=-1) / density_sum
+    aux_loss = mse_loss(m_initial, m_target)
+    physics_loss = torch.zeros(1, device=initial_states.device)
+
+    seq_loss = mse_loss(y_hat, target_squeezed)
+    loss = (
+        seq_loss
+        + aux_loss_weight * aux_loss
+        + saturation_reg_weight * saturation_reg
+        + symmetry_reg_weight * symmetry_reg
+    )
+    return {"loss": loss, "aux_loss": aux_loss, "physics_loss": physics_loss}
+
+
+def optimizer_step(  # noqa: PLR0913
+    step: int,
+    phase1_end: int,
+    phase2_end: int,
+    optimizer_encoder: torch.optim.Optimizer,
+    optimizer_density: torch.optim.Optimizer,
+    optimizer_scale: torch.optim.Optimizer | None,
+    clip_fn: typing.Callable[[torch.optim.Optimizer], None],
+) -> None:
+    if step < phase1_end:
+        clip_fn(optimizer_encoder)
+        optimizer_encoder.step()
+    elif step < phase2_end:
+        clip_fn(optimizer_encoder)
+        clip_fn(optimizer_density)
+        optimizer_encoder.step()
+        optimizer_density.step()
+        if optimizer_scale is not None:
+            clip_fn(optimizer_scale)
+            optimizer_scale.step()
+    else:
+        step_offset = step - phase2_end
+        if step_offset % 2 == 0:
+            clip_fn(optimizer_encoder)
+            optimizer_encoder.step()
+        else:
+            clip_fn(optimizer_density)
+            optimizer_density.step()
+            if optimizer_scale is not None:
+                clip_fn(optimizer_scale)
+                optimizer_scale.step()
+
+
 class EncoderDecoderPreisachNNModel(torch.nn.Module):
     """
     Neural Preisach model with encoder-decoder architecture.
@@ -73,6 +200,13 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         ).float()
         self.register_buffer("base_mesh", base_mesh)
         self.n_mesh_points = self.base_mesh.shape[0]
+
+        with torch.no_grad():
+            beta_m = base_mesh[:, 0]
+            alpha_m = base_mesh[:, 1]
+            mock_density = torch.exp(-(alpha_m - beta_m) / 0.1)
+            mock_density = mock_density / mock_density.sum()
+        self.register_buffer("mock_density", mock_density)
 
         self.encoder = encoder
 
@@ -150,13 +284,14 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         # Stack back into [batch_size, n_mesh_points, 2] format
         return torch.stack([beta, alpha], dim=-1)
 
-    def forward(
+    def forward(  # noqa: PLR0913
         self,
         encoder_input: torch.Tensor,
         decoder_input: torch.Tensor,
         encoder_mask: torch.Tensor | None = None,
         y0: torch.Tensor | None = None,
         initial_states: torch.Tensor | None = None,
+        density_override: torch.Tensor | None = None,
         *,
         temp: float = 1e-3,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -276,12 +411,16 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         # Move states back to original device
         states = states_cpu.to(h.device)
 
+        # density_override substitutes the learned density for M computation,
+        # e.g. mock_density in phase 1 before the density network is trained.
+        density_for_m = density_override if density_override is not None else density
+
         # Normalize density once (constant across time)
-        density_sum = density.sum(dim=-1, keepdim=True)  # [batch_size, 1]
+        density_sum = density_for_m.sum(dim=-1, keepdim=True)  # [batch_size, 1]
 
         # M = Σ μ(α,β)·s(α,β) / Σ μ(α,β), where s ∈ [-1,+1] per hysteron
         m = (
-            torch.sum(density.unsqueeze(1) * states, dim=-1) / density_sum
+            torch.sum(density_for_m.unsqueeze(1) * states, dim=-1) / density_sum
         )  # [batch_size, tgt_seq_len]
 
         # B_norm = h_scale · H_norm + m_scale · M + m_offset
@@ -366,11 +505,33 @@ class EncoderDecoderPreisachNN(BaseModule):
         gradient_clip_val: float = 1.0,
         aux_loss_weight: float = 1.0,
         saturation_reg_weight: float = 0.1,
+        symmetry_reg_weight: float = 0.0,
         n_train_samples: int = 0,
         fit_scale_offset: bool = False,
     ) -> None:
+        """
+        Parameters
+        ----------
+        symmetry_reg_weight : float
+            Weight for the Preisach density symmetry regularizer, which enforces
+            μ(β, α) = μ(1-α, 1-β). Only valid for materials with symmetric major
+            hysteresis loops (equal positive and negative saturation). Off by default
+            (0.0) — opt in explicitly and verify your data satisfies this assumption
+            before enabling. Enabling for asymmetric materials will corrupt the density.
+        """
         super().__init__()
         self.save_hyperparameters(ignore=["encoder"])
+
+        if symmetry_reg_weight > 0.0:
+            import warnings
+
+            warnings.warn(
+                "symmetry_reg_weight > 0: the Preisach density symmetry constraint "
+                "assumes mu(b,a) = mu(1-a,1-b), which is only valid for materials with "
+                "symmetric major hysteresis loops. Disable this for asymmetric materials.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         self.model = EncoderDecoderPreisachNNModel(
             mesh_size=mesh_scale,
@@ -453,13 +614,14 @@ class EncoderDecoderPreisachNN(BaseModule):
     def on_train_epoch_start(self) -> None:
         return
 
-    def forward(
+    def forward(  # noqa: PLR0913
         self,
         encoder_input: torch.Tensor,
         decoder_input: torch.Tensor,
         encoder_mask: torch.Tensor | None = None,
         y0: torch.Tensor | None = None,
         initial_states: torch.Tensor | None = None,
+        density_override: torch.Tensor | None = None,
         *,
         temp: float = 1e-3,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -469,6 +631,7 @@ class EncoderDecoderPreisachNN(BaseModule):
             encoder_mask=encoder_mask,
             y0=y0,
             initial_states=initial_states,
+            density_override=density_override,
             temp=temp,
         )
 
@@ -511,11 +674,21 @@ class EncoderDecoderPreisachNN(BaseModule):
             y0 = encoder_input[:, -1, 0]
             b_last = encoder_input[:, -1, -1]
 
+        step = self.global_step if self.training else float("inf")
+        phase1_end = self.hparams["encoder_fit_steps"]
+
+        density_override = (
+            self.model.mock_density.unsqueeze(0).expand(batch_size, -1)
+            if step < phase1_end
+            else None
+        )
+
         y_hat, density, _m_unscaled, initial_states, mesh_coords = self(
             encoder_input=encoder_input,
             decoder_input=decoder_input,
             encoder_mask=encoder_mask,
             y0=y0,
+            density_override=density_override,
             temp=self.hparams["temp"],
         )
 
@@ -525,8 +698,6 @@ class EncoderDecoderPreisachNN(BaseModule):
         # Must use current parameter values so this stays correct when fit_scale_offset=True
         # and the scale/offset drift from their initial 0.5/0.5 values.
         m_target = (b_last - self.model.m_offset.value) / self.model.m_scale.value
-        step = self.global_step if self.training else float("inf")
-        phase1_end = self.hparams["encoder_fit_steps"]
 
         # Saturation regularizer: penalise states near ±1 in all phases.
         # Without this the encoder can collapse to all-+1 or all-−1, which is a
@@ -535,80 +706,49 @@ class EncoderDecoderPreisachNN(BaseModule):
         # than the saturated boundary; weight is small so it doesn't fight the physics loss.
         saturation_reg = (initial_states**2).mean()
 
+        if self.hparams["symmetry_reg_weight"] > 0.0:
+            mirror_coords = torch.stack(
+                [1.0 - mesh_coords[..., 1], 1.0 - mesh_coords[..., 0]], dim=-1
+            )
+            density_mirror = self.model.density_from_mesh(mirror_coords)
+            symmetry_reg = mse_loss(density, density_mirror.detach())
+        else:
+            symmetry_reg = torch.zeros(1, device=density.device)
+
         if step < phase1_end:
-            # Physics-based per-hysteron loss (primary) + mean-field (coarse regularizer).
-            #
-            # For any H_last two regions of the Preisach plane (α ≥ β convention) are
-            # unambiguous regardless of magnetic history:
-            #   β < H_last  → deactivation threshold is below current field → hysteron ON  (+1)
-            #   α > H_last  → activation threshold is above current field   → hysteron OFF (-1)
-            # Hysterons where β ≥ H_last and α ≤ H_last are history-dependent → masked out.
-            h_last = y0.unsqueeze(-1)  # [batch, 1]  (H_norm at end of context)
-            alpha = mesh_coords[
-                ..., 1
-            ]  # [batch, n_mesh]  (upper / switch-up threshold)
-            beta = mesh_coords[
-                ..., 0
-            ]  # [batch, n_mesh]  (lower / switch-down threshold)
-
-            mask_pos = beta < h_last  # unambiguously ON
-            mask_neg = alpha > h_last  # unambiguously OFF
-
-            physics_target = torch.where(
-                mask_pos,
-                torch.ones_like(beta),
-                torch.where(
-                    mask_neg,
-                    -torch.ones_like(alpha),
-                    torch.zeros_like(beta),  # history-dependent, masked out below
-                ),
-            )
-
-            # Stratified loss: average the +1-region loss and the -1-region loss with equal
-            # weight, regardless of how many hysterons fall in each region.  Without this,
-            # a high H_last makes the +1 region much larger, giving a dominant +1 gradient
-            # that drives the encoder toward full saturation.
-            loss_pos = (
-                mse_loss(initial_states[mask_pos], physics_target[mask_pos])
-                if mask_pos.any()
-                else torch.tensor(0.0, device=initial_states.device)
-            )
-            loss_neg = (
-                mse_loss(initial_states[mask_neg], physics_target[mask_neg])
-                if mask_neg.any()
-                else torch.tensor(0.0, device=initial_states.device)
-            )
-            physics_loss = 0.5 * (loss_pos + loss_neg)
-
-            # Mean-field as coarse regularizer: aggregate M should match observed B_last
-            m_initial = initial_states.mean(dim=-1)
-            aux_loss = mse_loss(m_initial, m_target)
-
-            loss = (
-                physics_loss
-                + self.hparams["aux_loss_weight"] * aux_loss
-                + self.hparams["saturation_reg_weight"] * saturation_reg
+            out = phase1_loss(
+                initial_states=initial_states,
+                y0=y0,
+                mesh_coords=mesh_coords,
+                density=self.model.mock_density,
+                m_target=m_target,
+                saturation_reg=saturation_reg,
+                symmetry_reg=symmetry_reg,
+                aux_loss_weight=self.hparams["aux_loss_weight"],
+                saturation_reg_weight=self.hparams["saturation_reg_weight"],
+                symmetry_reg_weight=self.hparams["symmetry_reg_weight"],
             )
         else:
-            # Phase 2+: density is being trained, switch to density-weighted mean-field
-            #   M_encoder = Σ μ(α,β)·s₀(α,β) / Σ μ(α,β)
-            density_sum = density.sum(dim=-1)
-            m_initial = (density * initial_states).sum(dim=-1) / density_sum
-            aux_loss = mse_loss(m_initial, m_target)
-            physics_loss = torch.zeros(1, device=initial_states.device)
-
-            seq_loss = mse_loss(y_hat, target_squeezed)
-            loss = (
-                seq_loss
-                + self.hparams["aux_loss_weight"] * aux_loss
-                + self.hparams["saturation_reg_weight"] * saturation_reg
+            out = phase2_loss(
+                y_hat=y_hat,
+                target_squeezed=target_squeezed,
+                density=density,
+                initial_states=initial_states,
+                m_target=m_target,
+                saturation_reg=saturation_reg,
+                symmetry_reg=symmetry_reg,
+                aux_loss_weight=self.hparams["aux_loss_weight"],
+                saturation_reg_weight=self.hparams["saturation_reg_weight"],
+                symmetry_reg_weight=self.hparams["symmetry_reg_weight"],
             )
+        loss, aux_loss, physics_loss = out["loss"], out["aux_loss"], out["physics_loss"]
 
         return {
             "loss": loss,
             "aux_loss": aux_loss.detach(),
             "physics_loss": physics_loss.detach(),
             "saturation_reg": saturation_reg.detach(),
+            "symmetry_reg": symmetry_reg.detach(),
             "y_hat": y_hat,
             "y": target_squeezed,
             "x": decoder_input.squeeze(-1),
@@ -638,45 +778,18 @@ class EncoderDecoderPreisachNN(BaseModule):
 
         self.manual_backward(loss)
 
-        if step < phase1_end:
-            self.clip_gradients(
-                optimizer_encoder, gradient_clip_val=self.hparams["gradient_clip_val"]
-            )
-            optimizer_encoder.step()
-        elif step < phase2_end:
-            self.clip_gradients(
-                optimizer_encoder, gradient_clip_val=self.hparams["gradient_clip_val"]
-            )
-            self.clip_gradients(
-                optimizer_density, gradient_clip_val=self.hparams["gradient_clip_val"]
-            )
-            optimizer_encoder.step()
-            optimizer_density.step()
-            if optimizer_scale is not None:
-                self.clip_gradients(
-                    optimizer_scale, gradient_clip_val=self.hparams["gradient_clip_val"]
-                )
-                optimizer_scale.step()
-        else:
-            step_offset = step - phase2_end
-            if step_offset % 2 == 0:
-                self.clip_gradients(
-                    optimizer_encoder,
-                    gradient_clip_val=self.hparams["gradient_clip_val"],
-                )
-                optimizer_encoder.step()
-            else:
-                self.clip_gradients(
-                    optimizer_density,
-                    gradient_clip_val=self.hparams["gradient_clip_val"],
-                )
-                optimizer_density.step()
-                if optimizer_scale is not None:
-                    self.clip_gradients(
-                        optimizer_scale,
-                        gradient_clip_val=self.hparams["gradient_clip_val"],
-                    )
-                    optimizer_scale.step()
+        clip_fn = lambda opt: self.clip_gradients(  # noqa: E731
+            opt, gradient_clip_val=self.hparams["gradient_clip_val"]
+        )
+        optimizer_step(
+            step=step,
+            phase1_end=phase1_end,
+            phase2_end=phase2_end,
+            optimizer_encoder=optimizer_encoder,
+            optimizer_density=optimizer_density,
+            optimizer_scale=optimizer_scale,
+            clip_fn=clip_fn,
+        )
 
         if self.trainer.is_last_batch:
             schedulers = self.lr_schedulers()
@@ -691,6 +804,7 @@ class EncoderDecoderPreisachNN(BaseModule):
             "train/aux_loss": "aux_loss",
             "train/physics_loss": "physics_loss",
             "train/saturation_reg": "saturation_reg",
+            "train/symmetry_reg": "symmetry_reg",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=True, on_epoch=False)
 
