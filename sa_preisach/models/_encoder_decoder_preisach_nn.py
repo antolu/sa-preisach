@@ -161,10 +161,6 @@ def optimizer_step(
                 optimizer_scale.step()
 
     if adaptive_active and optimizer_adaptive is not None:
-        for pg in optimizer_adaptive.param_groups:
-            for p in pg["params"]:
-                if p.grad is not None:
-                    p.grad.neg_()
         optimizer_adaptive.step()
 
 
@@ -510,7 +506,6 @@ class EncoderDecoderPreisachNN(BaseModule):
         adaptive_loss_weights: bool = False,
         adaptive_loss_start: typing.Literal["all_phases", "phase2_plus"] = "phase2_plus",
         lr_adaptive: float = 1e-3,
-        adaptive_weight_decay: float = 1e-2,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["encoder", "density_prior"])
@@ -761,12 +756,19 @@ class EncoderDecoderPreisachNN(BaseModule):
         loss_unweighted: torch.Tensor | None = None
 
         if self.adaptive_weights is not None:
-            w_seq = self.adaptive_weights.log_seq.exp()
-            w_aux = self.adaptive_weights.log_aux.exp()
-            w_sat = self.adaptive_weights.log_sat.exp()
+            # Kendall & Gal homoscedastic uncertainty weighting:
+            # each term contributes  L / (2 * exp(2*log_s)) + log_s
+            # which is self-regularizing: growing log_s reduces the scaled loss
+            # but pays a log_s penalty, creating a natural equilibrium.
+            log_s_seq = self.adaptive_weights.log_seq
+            log_s_aux = self.adaptive_weights.log_aux
+            log_s_sat = self.adaptive_weights.log_sat
+
+            def _hw(loss_term: torch.Tensor, log_s: torch.nn.Parameter) -> torch.Tensor:
+                return loss_term / (2.0 * (2.0 * log_s).exp()) + log_s
 
             prior_losses_weighted: dict[str, torch.Tensor] = (
-                {k: v * self._prior_leaf_by_key[k].log_weight.exp() for k, v in prior_losses_raw.items()}
+                {k: _hw(v, self._prior_leaf_by_key[k].log_weight) for k, v in prior_losses_raw.items()}
                 if prior_losses_raw
                 else {}
             )
@@ -783,11 +785,11 @@ class EncoderDecoderPreisachNN(BaseModule):
 
             if step < phase1_end:
                 loss_unweighted = physics_loss + aux_loss + saturation_reg + raw_prior_sum
-                loss = w_seq * physics_loss + w_aux * aux_loss + w_sat * saturation_reg + prior_loss_weighted
+                loss = _hw(physics_loss, log_s_seq) + _hw(aux_loss, log_s_aux) + _hw(saturation_reg, log_s_sat) + prior_loss_weighted
             else:
                 seq_loss = mse_loss(y_hat, target_squeezed)
                 loss_unweighted = seq_loss + aux_loss + saturation_reg + raw_prior_sum
-                loss = w_seq * seq_loss + w_aux * aux_loss + w_sat * saturation_reg + prior_loss_weighted
+                loss = _hw(seq_loss, log_s_seq) + _hw(aux_loss, log_s_aux) + _hw(saturation_reg, log_s_sat) + prior_loss_weighted
 
             prior_losses = prior_losses_raw
             prior_loss = prior_loss_weighted
@@ -1037,7 +1039,7 @@ class EncoderDecoderPreisachNN(BaseModule):
             optimizer_adaptive = torch.optim.AdamW(
                 adaptive_params,
                 lr=self.hparams["lr_adaptive"],
-                weight_decay=self.hparams["adaptive_weight_decay"],
+                weight_decay=0.0,
             )
             scheduler_adaptive = torch.optim.lr_scheduler.StepLR(
                 optimizer_adaptive,
