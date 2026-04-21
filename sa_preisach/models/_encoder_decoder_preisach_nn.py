@@ -536,7 +536,7 @@ class EncoderDecoderPreisachNN(BaseModule):
         from ..priors import CompositeDensityPrior, SymmetryDensityPrior
 
         if isinstance(prior, SymmetryDensityPrior):
-            prior.density_net = self.model.density
+            prior.density_net = self.model.density_from_mesh
         elif isinstance(prior, CompositeDensityPrior):
             for p in prior.priors:
                 self._inject_density_net(p)
@@ -744,6 +744,12 @@ class EncoderDecoderPreisachNN(BaseModule):
             )
         loss, aux_loss, physics_loss = out["loss"], out["aux_loss"], out["physics_loss"]
 
+        with torch.no_grad():
+            residuals = y_hat.detach() - target_squeezed.detach()
+            mse = (residuals**2).mean()
+            rmse = mse.sqrt()
+            mae = residuals.abs().mean()
+
         return {
             "loss": loss,
             "aux_loss": aux_loss.detach(),
@@ -751,6 +757,9 @@ class EncoderDecoderPreisachNN(BaseModule):
             "saturation_reg": saturation_reg.detach(),
             "prior_loss": prior_loss.detach(),
             "prior_losses": {k: v.detach() for k, v in prior_losses.items()},
+            "mse": mse,
+            "rmse": rmse,
+            "mae": mae,
             "y_hat": y_hat,
             "y": target_squeezed,
             "x": decoder_input.squeeze(-1),
@@ -807,6 +816,9 @@ class EncoderDecoderPreisachNN(BaseModule):
             "train/physics_loss": "physics_loss",
             "train/saturation_reg": "saturation_reg",
             "train/prior_loss": "prior_loss",
+            "train/mse": "mse",
+            "train/rmse": "rmse",
+            "train/mae": "mae",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=True, on_epoch=False)
 
@@ -835,6 +847,9 @@ class EncoderDecoderPreisachNN(BaseModule):
         for tag, key in {
             "validation/loss": "loss",
             "validation/aux_loss": "aux_loss",
+            "validation/mse": "mse",
+            "validation/rmse": "rmse",
+            "validation/mae": "mae",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=False, on_epoch=True)
 
