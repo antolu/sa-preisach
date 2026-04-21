@@ -110,7 +110,7 @@ class SelfAdaptivePreisachModel(torch.nn.Module):
 
 
 class SelfAdaptivePreisach(BaseModule):
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         mesh_size: float,
         *,

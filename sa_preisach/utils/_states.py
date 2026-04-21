@@ -84,7 +84,7 @@ def initialize_state(
     return state, field
 
 
-def get_states(  # noqa: PLR0912, PLR0913
+def get_states(  # noqa: PLR0912
     h: torch.Tensor,
     alpha: torch.Tensor,
     beta: torch.Tensor,

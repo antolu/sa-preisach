@@ -24,7 +24,7 @@ CPU_DEVICE = torch.device("cpu")
 
 
 class DifferentiablePreisachNNModel(torch.nn.Module):
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         *,
         mesh_size: float,
@@ -158,7 +158,7 @@ class DifferentiablePreisachNN(BaseModule):
         This is used to create a loss weight for each training sample, and is passed by LightningCLI.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         mesh_scale: float,
         *,
@@ -481,7 +481,7 @@ class DifferentiablePreisachNN(BaseModule):
     ) -> tuple[dict[str, torch.Tensor], torch.Tensor]: ...
 
     @staticmethod
-    def fit_initial_state(  # noqa: PLR0913
+    def fit_initial_state(
         model: DifferentiablePreisachNN,
         train_h: torch.Tensor,
         train_b: torch.Tensor,

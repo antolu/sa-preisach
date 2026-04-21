@@ -39,7 +39,7 @@ def initialize_batched_state(
     return state, field
 
 
-def get_batched_states(  # noqa: PLR0913
+def get_batched_states(
     h: torch.Tensor,
     alpha: torch.Tensor,
     beta: torch.Tensor,

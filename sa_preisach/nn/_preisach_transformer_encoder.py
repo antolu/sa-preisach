@@ -34,7 +34,7 @@ class PreisachTransformerEncoder(PreisachEncoder):
         Temperature for smooth switch in output head. Default is 1e-2.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         num_features: int,
         *,

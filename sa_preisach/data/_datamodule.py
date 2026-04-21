@@ -16,7 +16,7 @@ from transformertf.data import TimeSeriesDataModule
 
 
 class PreisachDataModule(TimeSeriesDataModule):
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         *,
         known_covariates: str | typing.Sequence[str],

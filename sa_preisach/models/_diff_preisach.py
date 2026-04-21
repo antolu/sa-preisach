@@ -194,7 +194,7 @@ class DifferentiablePreisachModel(torch.nn.Module):
 
 
 class DifferentiablePreisach(BaseModule):
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         *,
         mesh_scale: float,
