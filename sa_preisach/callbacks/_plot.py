@@ -21,6 +21,17 @@ from ..utils import get_states
 log = logging.getLogger(__name__)
 
 
+def _try_get_logger_class(attr: str) -> type | None:
+    try:
+        obj = L.pytorch.loggers
+        for part in attr.split("."):
+            obj = getattr(obj, part)
+    except Exception:
+        return None
+    else:
+        return obj  # type: ignore[return-value]
+
+
 class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
     def __init__(
         self,
@@ -375,11 +386,26 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
     ) -> None:
         if trainer.logger is None:
             return
-        if isinstance(trainer.logger, L.pytorch.loggers.neptune.NeptuneLogger):
-            trainer.logger.experiment[tag].append(fig)
-        elif isinstance(trainer.logger, L.pytorch.loggers.TensorBoardLogger):
-            trainer.logger.experiment.add_figure(
-                tag, fig, global_step=trainer.global_step
+        logger = trainer.logger
+        if (
+            neptune_cls := _try_get_logger_class("neptune.NeptuneLogger")
+        ) and isinstance(logger, neptune_cls):
+            typing.cast(L.pytorch.loggers.neptune.NeptuneLogger, logger).experiment[
+                tag
+            ].append(fig)
+        elif (tb_cls := _try_get_logger_class("TensorBoardLogger")) and isinstance(
+            logger, tb_cls
+        ):
+            typing.cast(
+                L.pytorch.loggers.TensorBoardLogger, logger
+            ).experiment.add_figure(tag, fig, global_step=trainer.global_step)
+        elif (wandb_cls := _try_get_logger_class("WandbLogger")) and isinstance(
+            logger, wandb_cls
+        ):
+            import wandb
+
+            typing.cast(L.pytorch.loggers.WandbLogger, logger).experiment.log(
+                {tag: wandb.Image(fig)}, commit=False
             )
         else:
             msg = "Logger not supported"
