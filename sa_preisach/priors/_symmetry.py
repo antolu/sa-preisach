@@ -42,10 +42,12 @@ class SymmetryDensityPrior(DensityPrior):
             raise RuntimeError(msg)
         mirror_coords = 1.0 - mesh_coords
         with torch.no_grad():
-            density_mirror = self.density_net(mirror_coords)  # [batch, N], activation already applied
+            density_mirror = self.density_net(
+                mirror_coords
+            )  # [batch, N], activation already applied
         weights = (density + density_mirror) / 2
         weights_sum = weights.sum(dim=-1).clamp(min=1e-8)
         loss = (
             (weights * (density - density_mirror) ** 2).sum(dim=-1) / weights_sum
         ).mean()
-        return {"symmetry": self.weight * loss}
+        return {"symmetry": loss}

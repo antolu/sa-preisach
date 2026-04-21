@@ -28,4 +28,4 @@ class DiagonalDensityPrior(DensityPrior):
         dist_sq = (alpha - beta) ** 2
         density_sum = density.sum(dim=-1, keepdim=True).clamp(min=1e-8)
         loss = ((density * dist_sq).sum(dim=-1) / density_sum.squeeze(-1)).mean()
-        return {"diagonal": self.weight * loss}
+        return {"diagonal": loss}

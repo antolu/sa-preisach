@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import math
 
 import torch
 
@@ -9,6 +10,7 @@ class DensityPrior(torch.nn.Module, abc.ABC):
     def __init__(self, weight: float = 1.0) -> None:
         super().__init__()
         self.weight = weight
+        self.log_weight = torch.nn.Parameter(torch.tensor(math.log(weight)))
 
     @abc.abstractmethod
     def forward(
@@ -27,6 +29,7 @@ class DensityPrior(torch.nn.Module, abc.ABC):
         Returns
         -------
         dict[str, torch.Tensor]
-            Named scalar loss terms. The model sums all values for the total prior
-            loss and logs each key individually under ``train/prior/<key>``.
+            Named scalar loss terms, **unweighted**. The caller is responsible for
+            applying either the static ``self.weight`` float or the learned
+            ``self.log_weight`` parameter depending on the training mode.
         """
