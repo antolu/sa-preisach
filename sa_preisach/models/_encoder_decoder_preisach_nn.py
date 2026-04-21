@@ -129,8 +129,14 @@ def optimizer_step(  # noqa: PLR0913
     optimizer_encoder: torch.optim.Optimizer,
     optimizer_density: torch.optim.Optimizer,
     optimizer_scale: torch.optim.Optimizer | None,
+    optimizer_adaptive: torch.optim.Optimizer | None,
+    adaptive_loss_start: typing.Literal["all_phases", "phase2_plus"],
     clip_fn: typing.Callable[[torch.optim.Optimizer], None],
 ) -> None:
+    adaptive_active = optimizer_adaptive is not None and (
+        adaptive_loss_start == "all_phases" or step >= phase1_end
+    )
+
     if step < phase1_end:
         clip_fn(optimizer_encoder)
         optimizer_encoder.step()
@@ -153,6 +159,13 @@ def optimizer_step(  # noqa: PLR0913
             if optimizer_scale is not None:
                 clip_fn(optimizer_scale)
                 optimizer_scale.step()
+
+    if adaptive_active and optimizer_adaptive is not None:
+        for pg in optimizer_adaptive.param_groups:
+            for p in pg["params"]:
+                if p.grad is not None:
+                    p.grad.neg_()
+        optimizer_adaptive.step()
 
 
 class EncoderDecoderPreisachNNModel(torch.nn.Module):
@@ -509,7 +522,9 @@ class EncoderDecoderPreisachNN(BaseModule):
         n_train_samples: int = 0,
         fit_scale_offset: bool = False,
         adaptive_loss_weights: bool = False,
-        adaptive_loss_start: typing.Literal["all_phases", "phase2_plus"] = "phase2_plus",
+        adaptive_loss_start: typing.Literal[
+            "all_phases", "phase2_plus"
+        ] = "phase2_plus",
         lr_adaptive: float = 1e-3,
     ) -> None:
         super().__init__()
@@ -812,6 +827,10 @@ class EncoderDecoderPreisachNN(BaseModule):
         optimizers = self.optimizers()
         optimizer_encoder, optimizer_density = optimizers[0], optimizers[1]
         optimizer_scale = optimizers[2] if self.hparams["fit_scale_offset"] else None
+        _adaptive_idx = 3 if self.hparams["fit_scale_offset"] else 2
+        optimizer_adaptive = (
+            optimizers[_adaptive_idx] if self.hparams["adaptive_loss_weights"] else None
+        )
 
         out = self.common_step(batch, batch_idx)
         loss = out["loss"]
@@ -824,6 +843,8 @@ class EncoderDecoderPreisachNN(BaseModule):
         optimizer_density.zero_grad()
         if optimizer_scale is not None:
             optimizer_scale.zero_grad()
+        if optimizer_adaptive is not None:
+            optimizer_adaptive.zero_grad()
 
         self.manual_backward(loss)
 
@@ -837,16 +858,25 @@ class EncoderDecoderPreisachNN(BaseModule):
             optimizer_encoder=optimizer_encoder,
             optimizer_density=optimizer_density,
             optimizer_scale=optimizer_scale,
+            optimizer_adaptive=optimizer_adaptive,
+            adaptive_loss_start=self.hparams["adaptive_loss_start"],
             clip_fn=clip_fn,
         )
 
         if self.trainer.is_last_batch:
             schedulers = self.lr_schedulers()
-            schedulers[0].step()  # encoder
+            schedulers[0].step()
             if step >= phase1_end:
-                schedulers[1].step()  # density
+                schedulers[1].step()
                 if self.hparams["fit_scale_offset"]:
-                    schedulers[2].step()  # scale/offset
+                    schedulers[2].step()
+            if self.hparams["adaptive_loss_weights"]:
+                _adaptive_sched_idx = 3 if self.hparams["fit_scale_offset"] else 2
+                if (
+                    self.hparams["adaptive_loss_start"] == "all_phases"
+                    or step >= phase1_end
+                ):
+                    schedulers[_adaptive_sched_idx].step()
 
         for tag, key in {
             "train/loss": "loss",
@@ -949,5 +979,22 @@ class EncoderDecoderPreisachNN(BaseModule):
             )
             optimizers.append(optimizer_scale)
             schedulers.append(scheduler_scale)
+
+        if self.hparams["adaptive_loss_weights"] and self.adaptive_weights is not None:
+            adaptive_params = list(self.adaptive_weights.parameters()) + [
+                leaf.log_weight for leaf in self._prior_leaves
+            ]
+            optimizer_adaptive = torch.optim.AdamW(
+                adaptive_params,
+                lr=self.hparams["lr_adaptive"],
+                weight_decay=0.0,
+            )
+            scheduler_adaptive = torch.optim.lr_scheduler.StepLR(
+                optimizer_adaptive,
+                step_size=self.hparams["lr_step_interval"],
+                gamma=self.hparams["lr_gamma"],
+            )
+            optimizers.append(optimizer_adaptive)
+            schedulers.append(scheduler_adaptive)
 
         return optimizers, schedulers

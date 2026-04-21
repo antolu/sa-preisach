@@ -277,3 +277,87 @@ def test_prior_leaf_by_key_empty_without_prior(fake_triangle_mesh: None) -> None
     )
     assert model._prior_leaf_by_key == {}  # noqa: SLF001
     assert model._prior_leaves == []  # noqa: SLF001
+
+
+def test_adaptive_loss_weights_module_created_when_enabled(
+    fake_triangle_mesh: None,
+) -> None:
+    del fake_triangle_mesh
+    from sa_preisach.models._adaptive_loss_weights import AdaptiveLossWeights
+
+    encoder = _build_encoder(PreisachLSTMEncoder)
+    model = EncoderDecoderPreisachNN(
+        mesh_scale=0.5,
+        hidden_dim=8,
+        num_layers=2,
+        compile_model=False,
+        mesh_perturbation_std=0.0,
+        encoder=encoder,
+        adaptive_loss_weights=True,
+        aux_loss_weight=2.0,
+        saturation_reg_weight=0.5,
+    )
+    assert model.adaptive_weights is not None
+    assert isinstance(model.adaptive_weights, AdaptiveLossWeights)
+    assert torch.isclose(
+        model.adaptive_weights.log_aux.exp(), torch.tensor(2.0), atol=1e-5
+    )
+    assert torch.isclose(
+        model.adaptive_weights.log_sat.exp(), torch.tensor(0.5), atol=1e-5
+    )
+
+
+def test_adaptive_loss_weights_none_when_disabled(fake_triangle_mesh: None) -> None:
+    del fake_triangle_mesh
+    encoder = _build_encoder(PreisachLSTMEncoder)
+    model = EncoderDecoderPreisachNN(
+        mesh_scale=0.5,
+        hidden_dim=8,
+        num_layers=2,
+        compile_model=False,
+        mesh_perturbation_std=0.0,
+        encoder=encoder,
+        adaptive_loss_weights=False,
+    )
+    assert model.adaptive_weights is None
+
+
+def test_configure_optimizers_returns_four_when_adaptive(
+    fake_triangle_mesh: None,
+) -> None:
+    del fake_triangle_mesh
+    encoder = _build_encoder(PreisachLSTMEncoder)
+    model = EncoderDecoderPreisachNN(
+        mesh_scale=0.5,
+        hidden_dim=8,
+        num_layers=2,
+        compile_model=False,
+        mesh_perturbation_std=0.0,
+        encoder=encoder,
+        adaptive_loss_weights=True,
+        fit_scale_offset=True,
+    )
+    optimizers, schedulers = model.configure_optimizers()
+    expected_four = 4
+    assert len(optimizers) == expected_four
+    assert len(schedulers) == expected_four
+
+
+def test_configure_optimizers_returns_two_when_not_adaptive(
+    fake_triangle_mesh: None,
+) -> None:
+    del fake_triangle_mesh
+    encoder = _build_encoder(PreisachLSTMEncoder)
+    model = EncoderDecoderPreisachNN(
+        mesh_scale=0.5,
+        hidden_dim=8,
+        num_layers=2,
+        compile_model=False,
+        mesh_perturbation_std=0.0,
+        encoder=encoder,
+        adaptive_loss_weights=False,
+    )
+    optimizers, schedulers = model.configure_optimizers()
+    expected_two = 2
+    assert len(optimizers) == expected_two
+    assert len(schedulers) == expected_two
