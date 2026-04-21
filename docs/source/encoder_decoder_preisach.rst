@@ -304,12 +304,15 @@ baseline regularizer.
 ``CentroidDensityPrior``
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-Penalizes the density-weighted centroid being far from the origin::
+Penalizes the density-weighted centroid being far from a configurable target ``(target_α, target_β)``::
 
-    loss = mean( Σ μᵢ (αᵢ + βᵢ)/2 / Σ μᵢ )
+    centroid_α = Σ μᵢ αᵢ / Σ μᵢ
+    centroid_β = Σ μᵢ βᵢ / Σ μᵢ
+    loss = mean( (centroid_α - target_α)² + (centroid_β - target_β)² )
 
-Pulls mass toward small ``(α, β)`` — hysterons that flip at low fields. Use for
-soft magnetic materials where most hysteretic activity occurs near zero field.
+Both targets default to ``0.5``. With the [0, 1] normalization where ``0.5`` corresponds
+to zero field, this pulls mass toward hysterons that flip near zero field. Adjust
+``target_alpha`` / ``target_beta`` to bias the centroid toward any point in the triangle.
 
 ``BoundaryDensityPrior``
 ~~~~~~~~~~~~~~~~~~~~~~~~

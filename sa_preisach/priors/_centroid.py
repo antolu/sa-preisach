@@ -7,26 +7,39 @@ from ._base import DensityPrior
 
 class CentroidDensityPrior(DensityPrior):
     """
-    Penalizes the density-weighted centroid being far from the origin along the diagonal.
+    Penalizes the density-weighted centroid being far from a target (alpha, beta).
 
-    Loss = mean over batch of ( sum_i mu_i * (alpha_i + beta_i) / 2 / sum_i mu_i )
+    Loss = mean over batch of (
+        (sum_i mu_i * alpha_i / sum_i mu_i - target_alpha)^2
+      + (sum_i mu_i * beta_i  / sum_i mu_i - target_beta)^2
+    )
 
-    Encourages mass near small (alpha, beta) values — hysterons that flip at low
-    fields. Useful for soft magnetic materials where most hysteretic activity
-    occurs near zero field.
+    With the [0, 1] normalized convention where 0.5 corresponds to zero field,
+    use target_alpha=0.5, target_beta=0.5 to pull mass toward low-field hysterons.
     """
 
-    def __init__(self, weight: float = 1.0) -> None:
+    def __init__(
+        self,
+        weight: float = 1.0,
+        target_alpha: float = 0.5,
+        target_beta: float = 0.5,
+    ) -> None:
         super().__init__(weight)
+        self.target_alpha = target_alpha
+        self.target_beta = target_beta
 
-    @staticmethod
     def forward(
+        self,
         mesh_coords: torch.Tensor,
         density: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         alpha = mesh_coords[..., 1]
         beta = mesh_coords[..., 0]
-        midpoint = (alpha + beta) / 2.0
         density_sum = density.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-        centroid = ((density * midpoint).sum(dim=-1) / density_sum.squeeze(-1)).mean()
-        return {"centroid": centroid}
+        centroid_alpha = (density * alpha).sum(dim=-1) / density_sum.squeeze(-1)
+        centroid_beta = (density * beta).sum(dim=-1) / density_sum.squeeze(-1)
+        loss = (
+            (centroid_alpha - self.target_alpha) ** 2
+            + (centroid_beta - self.target_beta) ** 2
+        ).mean()
+        return {"centroid": loss}

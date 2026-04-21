@@ -8,12 +8,6 @@ from ._base import DensityPrior
 class CompositeDensityPrior(DensityPrior):
     def __init__(self, *priors: DensityPrior) -> None:
         super().__init__(weight=1.0)
-        seen: set[type] = set()
-        for p in priors:
-            if type(p) in seen:
-                msg = f"Duplicate prior type: {type(p).__name__}. Compose them externally instead."
-                raise ValueError(msg)
-            seen.add(type(p))
         self.priors = torch.nn.ModuleList(priors)
 
     def forward(
@@ -22,7 +16,17 @@ class CompositeDensityPrior(DensityPrior):
         density: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         out: dict[str, torch.Tensor] = {}
+        key_counts: dict[str, int] = {}
         for prior in self.priors:
             for k, v in prior(mesh_coords, density).items():
-                out[k] = out[k] + v if k in out else v
+                if k in out:
+                    # rename both existing and new entry to avoid silent summation
+                    count = key_counts.get(k, 1)
+                    if count == 1:
+                        out[f"{k}_0"] = out.pop(k)
+                    out[f"{k}_{count}"] = v
+                    key_counts[k] = count + 1
+                else:
+                    out[k] = v
+                    key_counts[k] = 1
         return out
