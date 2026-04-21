@@ -211,3 +211,23 @@ def test_lightning_parser_model_requires_encoder(fake_triangle_mesh: None) -> No
                 "mesh_perturbation_std": 0.0,
             }
         })
+
+
+def test_adaptive_loss_weights_initial_values() -> None:
+    from sa_preisach.models._adaptive_loss_weights import AdaptiveLossWeights
+
+    alw = AdaptiveLossWeights(aux_loss_weight=2.0, saturation_reg_weight=0.5)
+    assert torch.isclose(alw.log_seq.exp(), torch.tensor(1.0), atol=1e-5)
+    assert torch.isclose(alw.log_aux.exp(), torch.tensor(2.0), atol=1e-5)
+    assert torch.isclose(alw.log_sat.exp(), torch.tensor(0.5), atol=1e-5)
+
+
+def test_adaptive_loss_weights_parameters_are_nn_parameters() -> None:
+    from sa_preisach.models._adaptive_loss_weights import AdaptiveLossWeights
+
+    expected_param_count = 3
+    alw = AdaptiveLossWeights(aux_loss_weight=1.0, saturation_reg_weight=1.0)
+    params = list(alw.parameters())
+    assert len(params) == expected_param_count
+    for p in params:
+        assert isinstance(p, torch.nn.Parameter)
