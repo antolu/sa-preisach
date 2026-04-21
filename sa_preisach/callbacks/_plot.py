@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 import typing
 
-import lightning as L
+import lightning
 import matplotlib
 import matplotlib.pyplot as plt
 import torch
+import wandb
 from transformertf.data import TimeSeriesDataset
 from transformertf.data.dataset import EncoderDecoderDataset
 
@@ -23,7 +24,7 @@ log = logging.getLogger(__name__)
 
 def _try_get_logger_class(attr: str) -> type | None:
     try:
-        obj = L.pytorch.loggers
+        obj = lightning.pytorch.loggers
         for part in attr.split("."):
             obj = getattr(obj, part)
     except Exception:
@@ -32,7 +33,7 @@ def _try_get_logger_class(attr: str) -> type | None:
         return obj  # type: ignore[return-value]
 
 
-class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
+class PlotHysteresisCallback(lightning.pytorch.callbacks.Callback):
     def __init__(
         self,
         *,
@@ -52,11 +53,8 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
 
     def on_validation_epoch_end(  # type: ignore[override]
         self,
-        trainer: L.Trainer,
-        pl_module: SelfAdaptivePreisach
-        | DifferentiablePreisach
-        | DifferentiablePreisachNN
-        | EncoderDecoderPreisachNN,
+        trainer: lightning.Trainer,
+        pl_module: SelfAdaptivePreisach | DifferentiablePreisach | DifferentiablePreisachNN | EncoderDecoderPreisachNN,
     ) -> None:
         if not trainer.is_global_zero:
             return super().on_validation_epoch_end(trainer, pl_module)
@@ -76,9 +74,7 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
                 outputs = pl_module.validation_outputs_by_dataloader.get(dataloader_idx)
                 if not outputs:
                     continue
-                dataset = typing.cast(
-                    TimeSeriesDataset | EncoderDecoderDataset, dataloader.dataset
-                )
+                dataset = typing.cast(TimeSeriesDataset | EncoderDecoderDataset, dataloader.dataset)
                 hysteresis_output = self._stitched_rollout(pl_module, dataset, outputs)
                 self._log_validation_output(
                     trainer=trainer,
@@ -91,12 +87,8 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         else:
             if not pl_module.validation_outputs:
                 return super().on_validation_epoch_end(trainer, pl_module)
-            dataset = typing.cast(
-                TimeSeriesDataset | EncoderDecoderDataset, dataloaders.dataset
-            )
-            hysteresis_output = self._stitched_rollout(
-                pl_module, dataset, pl_module.validation_outputs
-            )
+            dataset = typing.cast(TimeSeriesDataset | EncoderDecoderDataset, dataloaders.dataset)
+            hysteresis_output = self._stitched_rollout(pl_module, dataset, pl_module.validation_outputs)
             self._log_validation_output(
                 trainer=trainer,
                 pl_module=pl_module,
@@ -126,10 +118,7 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
 
     def _stitched_rollout(
         self,
-        pl_module: SelfAdaptivePreisach
-        | DifferentiablePreisach
-        | DifferentiablePreisachNN
-        | EncoderDecoderPreisachNN,
+        pl_module: SelfAdaptivePreisach | DifferentiablePreisach | DifferentiablePreisachNN | EncoderDecoderPreisachNN,
         dataset: TimeSeriesDataset | EncoderDecoderDataset,
         outputs: list[dict[str, torch.Tensor]],
     ) -> dict[str, torch.Tensor]:
@@ -228,11 +217,8 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
     def _log_validation_output(
         self,
         *,
-        trainer: L.Trainer,
-        pl_module: SelfAdaptivePreisach
-        | DifferentiablePreisach
-        | DifferentiablePreisachNN
-        | EncoderDecoderPreisachNN,
+        trainer: lightning.Trainer,
+        pl_module: SelfAdaptivePreisach | DifferentiablePreisach | DifferentiablePreisachNN | EncoderDecoderPreisachNN,
         dataset: TimeSeriesDataset | EncoderDecoderDataset,
         output: dict[str, torch.Tensor],
         hysteresis_output: dict[str, torch.Tensor] | None = None,
@@ -253,8 +239,8 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         y_hat_sample = y_hat_sample.detach().cpu()
 
         x_inv = h_transform.inverse_transform(x_sample)
-        y_inv = b_transform.inverse_transform(x_sample, y_sample)
-        y_hat_inv = b_transform.inverse_transform(x_sample, y_hat_sample)
+        y_inv = b_transform.inverse_transform(x_inv, y_sample)
+        y_hat_inv = b_transform.inverse_transform(x_inv, y_hat_sample)
 
         fig_hysteresis = plot_hysteresis(x_inv, y_inv, y_hat_inv)
         self._log_figure(trainer, fig_hysteresis, tag=f"{tag_prefix}/hysteresis")
@@ -310,11 +296,8 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
 
     def on_train_batch_end(
         self,
-        trainer: L.Trainer,
-        pl_module: SelfAdaptivePreisach
-        | DifferentiablePreisach
-        | DifferentiablePreisachNN
-        | EncoderDecoderPreisachNN,
+        trainer: lightning.Trainer,
+        pl_module: SelfAdaptivePreisach | DifferentiablePreisach | DifferentiablePreisachNN | EncoderDecoderPreisachNN,
         outputs: dict[str, torch.Tensor],
         batch: typing.Any,
         batch_idx: int,
@@ -332,9 +315,7 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         if train_dataloader is None:
             return
 
-        dataset = typing.cast(
-            TimeSeriesDataset | EncoderDecoderDataset, train_dataloader.dataset
-        )
+        dataset = typing.cast(TimeSeriesDataset | EncoderDecoderDataset, train_dataloader.dataset)
 
         h_transform, b_transform = list(dataset.transforms.values())
 
@@ -354,8 +335,8 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
         y_hat_sample = y_hat_sample.detach().cpu()
 
         x_inv = h_transform.inverse_transform(x_sample)
-        y_inv = b_transform.inverse_transform(x_sample, y_sample)
-        y_hat_inv = b_transform.inverse_transform(x_sample, y_hat_sample)
+        y_inv = b_transform.inverse_transform(x_inv, y_sample)
+        y_hat_inv = b_transform.inverse_transform(x_inv, y_hat_sample)
 
         fig_hysteresis = plot_hysteresis(x_inv, y_inv, y_hat_inv)
         self._log_figure(trainer, fig_hysteresis, tag="train/hysteresis")
@@ -374,37 +355,24 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
                     beta_perturbed,
                     initial_states,
                 )
-                self._log_figure(
-                    trainer, fig_initial_states, tag=f"train/initial_states_{i}"
-                )
+                self._log_figure(trainer, fig_initial_states, tag=f"train/initial_states_{i}")
                 plt.close(fig_initial_states)
 
         pl_module.train()
 
-    def _log_figure(
-        self, trainer: L.Trainer, fig: matplotlib.figure.Figure, tag: str
-    ) -> None:
+    def _log_figure(self, trainer: lightning.Trainer, fig: matplotlib.figure.Figure, tag: str) -> None:
+        _ = self
         if trainer.logger is None:
             return
         logger = trainer.logger
-        if (
-            neptune_cls := _try_get_logger_class("neptune.NeptuneLogger")
-        ) and isinstance(logger, neptune_cls):
-            typing.cast(L.pytorch.loggers.neptune.NeptuneLogger, logger).experiment[
-                tag
-            ].append(fig)
-        elif (tb_cls := _try_get_logger_class("TensorBoardLogger")) and isinstance(
-            logger, tb_cls
-        ):
-            typing.cast(
-                L.pytorch.loggers.TensorBoardLogger, logger
-            ).experiment.add_figure(tag, fig, global_step=trainer.global_step)
-        elif (wandb_cls := _try_get_logger_class("WandbLogger")) and isinstance(
-            logger, wandb_cls
-        ):
-            import wandb
-
-            typing.cast(L.pytorch.loggers.WandbLogger, logger).experiment.log(
+        if (neptune_cls := _try_get_logger_class("neptune.NeptuneLogger")) and isinstance(logger, neptune_cls):
+            typing.cast(lightning.pytorch.loggers.neptune.NeptuneLogger, logger).experiment[tag].append(fig)
+        elif (tb_cls := _try_get_logger_class("TensorBoardLogger")) and isinstance(logger, tb_cls):
+            typing.cast(lightning.pytorch.loggers.TensorBoardLogger, logger).experiment.add_figure(
+                tag, fig, global_step=trainer.global_step
+            )
+        elif (wandb_cls := _try_get_logger_class("WandbLogger")) and isinstance(logger, wandb_cls):
+            typing.cast(lightning.pytorch.loggers.WandbLogger, logger).experiment.log(
                 {tag: wandb.Image(fig)}, commit=False
             )
         else:
@@ -417,9 +385,7 @@ def plot_hysteresis(
     y: torch.Tensor,
     y_hat: torch.Tensor,
 ) -> matplotlib.figure.Figure:
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(8, 8), gridspec_kw={"height_ratios": [2, 1]}
-    )
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8), gridspec_kw={"height_ratios": [2, 1]})
 
     x_np = x.detach().cpu().numpy()
     y_np = y.detach().cpu().numpy()

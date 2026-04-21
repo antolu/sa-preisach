@@ -506,6 +506,8 @@ class EncoderDecoderPreisachNN(BaseModule):
         adaptive_loss_weights: bool = False,
         adaptive_loss_start: typing.Literal["all_phases", "phase2_plus"] = "phase2_plus",
         lr_adaptive: float = 1e-3,
+        temp_min: float | None = None,
+        temp_anneal_steps: int = 0,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["encoder", "density_prior"])
@@ -699,13 +701,21 @@ class EncoderDecoderPreisachNN(BaseModule):
 
         density_override = self.model.mock_density.unsqueeze(0).expand(batch_size, -1) if step < phase1_end else None
 
+        phase2_end = phase1_end + self.hparams["density_fit_steps"]
+        temp_min = self.hparams["temp_min"]
+        if temp_min is not None and self.hparams["temp_anneal_steps"] > 0 and step >= phase2_end:
+            anneal_progress = min((step - phase2_end) / self.hparams["temp_anneal_steps"], 1.0)
+            current_temp = self.hparams["temp"] + (temp_min - self.hparams["temp"]) * anneal_progress
+        else:
+            current_temp = self.hparams["temp"]
+
         y_hat, density, _m_unscaled, initial_states, mesh_coords = self(
             encoder_input=encoder_input,
             decoder_input=decoder_input,
             encoder_mask=encoder_mask,
             y0=y0,
             density_override=density_override,
-            temp=self.hparams["temp"],
+            temp=current_temp,
         )
 
         target_squeezed = target.squeeze(-1)
