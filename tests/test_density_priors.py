@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import torch
-import pytest
 from sa_preisach.priors import DiagonalDensityPrior, SymmetryDensityPrior, DensityPrior
 
 
