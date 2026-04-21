@@ -189,19 +189,97 @@ time as a reminder of the assumption.
 Combined loss
 ~~~~~~~~~~~~~
 
-::
+**Static mode** (``adaptive_loss_weights=False``, default)::
 
     Phase 1:
         loss = loss_physics
-             + aux_loss_weight    * loss_aux
-             + saturation_reg_weight * loss_sat
-             + symmetry_reg_weight   * loss_sym   # 0 by default
+             + aux_loss_weight        * loss_aux
+             + saturation_reg_weight  * loss_sat
+             + Σ prior_leaf.weight    * loss_prior_i
 
     Phase 2+:
         loss = MSE(y_hat, B_target)
-             + aux_loss_weight    * loss_aux
-             + saturation_reg_weight * loss_sat
-             + symmetry_reg_weight   * loss_sym   # 0 by default
+             + aux_loss_weight        * loss_aux
+             + saturation_reg_weight  * loss_sat
+             + Σ prior_leaf.weight    * loss_prior_i
+
+**Adaptive mode** (``adaptive_loss_weights=True``)::
+
+    Phase 1:
+        loss = exp(λ_seq) * loss_physics
+             + exp(λ_aux) * loss_aux
+             + exp(λ_sat) * loss_sat
+             + Σ exp(λ_prior_i) * loss_prior_i
+
+    Phase 2+:
+        loss = exp(λ_seq) * MSE(y_hat, B_target)
+             + exp(λ_aux) * loss_aux
+             + exp(λ_sat) * loss_sat
+             + Σ exp(λ_prior_i) * loss_prior_i
+
+    where λ_* are learned parameters updated by maximizing the weighted loss
+    (negated gradient step).
+
+Self-adaptive loss weighting
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Enabled with ``adaptive_loss_weights=True``. Each loss term is assigned a learned
+log-weight parameter ``λᵢ`` (an ``nn.Parameter``), and the combined loss becomes:
+
+.. math::
+
+    \mathcal{L} = \sum_i \exp(\lambda_i) \cdot L_i
+
+The model parameters are updated to **minimize** this weighted loss. The weight
+parameters ``λᵢ`` are updated to **maximize** it (gradients are negated before
+the adaptive optimizer steps). This pushes weight mass toward whichever term the
+model is currently failing at, providing automatic loss balancing without manual
+tuning of scalar weights.
+
+Hyperparameters
+^^^^^^^^^^^^^^^
+
+``adaptive_loss_weights`` (bool, default ``False``)
+    Enable or disable the mechanism. When ``False``, all existing static weight
+    behaviour is unchanged and no new parameters are added to the checkpoint.
+
+``adaptive_loss_start`` (``"all_phases"`` | ``"phase2_plus"``, default ``"phase2_plus"``)
+    When to activate the adaptive optimizer.
+
+    - ``"phase2_plus"``: adaptive weights are updated only from phase 2 onwards
+      (once the density network starts training). Recommended for most runs — in
+      phase 1 only the encoder is trained and having the weights adapt to the
+      encoder-only loss landscape can bias them before density training begins.
+    - ``"all_phases"``: adaptive weights update from the very first step. Use
+      when you want the weights to adapt during phase 1 as well, e.g. to balance
+      ``physics_loss`` and ``aux_loss`` automatically.
+
+``lr_adaptive`` (float, default ``1e-3``)
+    Learning rate for the adaptive weight optimizer (``AdamW``).
+
+Unweighted logging
+^^^^^^^^^^^^^^^^^^
+
+When SA-PINN is active, the following additional metrics are logged:
+
+- ``train/loss_unweighted``, ``validation/loss_unweighted``: simple sum of all
+  unweighted loss terms (no learned weights). Use this to verify that the raw
+  combined loss is decreasing even as the weights shift.
+- ``train/adaptive_weight/seq``, ``train/adaptive_weight/aux``,
+  ``train/adaptive_weight/sat``: effective weight (``exp(λ)`` in natural scale)
+  for the sequence, auxiliary, and saturation terms.
+- ``train/adaptive_weight/prior/<key>``: effective weight per named prior term.
+
+Individual unweighted losses (``train/aux_loss``, ``train/physics_loss``,
+``train/mse``, etc.) are always logged in natural scale regardless of mode.
+
+Note on ``DensityPrior``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``DensityPrior.forward()`` always returns **unweighted** loss values. The static
+``weight`` float on each prior (used when ``adaptive_loss_weights=False``) is
+applied at the ``common_step`` call site, not inside ``forward()``. The learned
+``log_weight`` parameter on each leaf prior is used when SA-PINN is active.
 
 Multi-window rollout
 ---------------------
