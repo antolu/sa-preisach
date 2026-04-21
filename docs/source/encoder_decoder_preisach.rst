@@ -174,14 +174,17 @@ counterpart). This implies::
 
     μ(β, α) = μ(1 - α, 1 - β)
 
-The regularizer penalizes the MSE between the density at each mesh point and the
-density evaluated at its mirror::
+The regularizer penalizes the density-weighted squared difference between each mesh
+point and its mirror. Plain MSE is diluted when density is concentrated on few points
+(near-zero regions contribute nothing meaningful). Weighting by the average density
+ensures the penalty fires where mass actually exists::
 
-    loss_sym = MSE(μ(β, α),  μ(1 - α, 1 - β).detach())
+    w = (μ(β, α) + μ(1-α, 1-β)) / 2
+    loss_sym = Σ w · (μ(β, α) - μ(1-α, 1-β))² / Σ w
 
-Gradients flow only through the left-hand side (the ``.detach()`` on the mirror
-prevents circular gradients). Enable with ``symmetry_reg_weight > 0``; a
-``UserWarning`` is raised at construction time as a reminder of the assumption.
+Gradients flow only through the left-hand ``μ(β, α)`` (the mirror is detached).
+Enable with ``symmetry_reg_weight > 0``; a ``UserWarning`` is raised at construction
+time as a reminder of the assumption.
 
 Combined loss
 ~~~~~~~~~~~~~
