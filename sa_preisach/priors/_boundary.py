@@ -32,8 +32,12 @@ class BoundaryDensityPrior(DensityPrior):
     ) -> dict[str, torch.Tensor]:
         alpha = mesh_coords[..., 1]
         beta = mesh_coords[..., 0]
-        margin = torch.stack([alpha, 1.0 - beta, alpha - beta], dim=-1).min(dim=-1).values
+        margin = (
+            torch.stack([alpha, 1.0 - beta, alpha - beta], dim=-1).min(dim=-1).values
+        )
         boundary_proximity = torch.exp(-margin / self.sigma)
         density_sum = density.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-        loss = ((density * boundary_proximity).sum(dim=-1) / density_sum.squeeze(-1)).mean()
+        loss = (
+            (density * boundary_proximity).sum(dim=-1) / density_sum.squeeze(-1)
+        ).mean()
         return {"boundary": loss}

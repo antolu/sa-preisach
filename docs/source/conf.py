@@ -7,6 +7,7 @@ import typing
 import sphinx.util.logging
 
 import sa_preisach
+import sa_preisach._mod_replace
 
 if typing.TYPE_CHECKING:
     import sphinx.application
@@ -86,8 +87,6 @@ def hijack_module_name_replacement() -> None:
     # Working in sphinx environment, not replacing due to
     # https://github.com/sphinx-doc/sphinx/issues/11031
     logger.info("Disabling __module__ rewrite")
-    import sa_preisach._mod_replace
-
     for mod_name in list(sys.modules):
         if mod_name == "sa_preisach._mod_replace":
             continue
@@ -109,8 +108,9 @@ def remove__init__from_docs(
     options: dict,
 ) -> bool | None:
     # Skip the __init__ methods of all classes.
-    # Reminder: a handler must return True to skip, None to delegate. False means that
-    # the thing MUST not be skipped (giving no chance for downstream handlers to influence
+    # Reminder: a handler must return True to skip, None to delegate.
+    # False means that the thing MUST not be skipped
+    # (giving no chance for downstream handlers to influence
     # the skipping behaviour).
 
     # Unused args:

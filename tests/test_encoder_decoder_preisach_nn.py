@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing
+import warnings
 
 import numpy as np
 import pytest
@@ -8,7 +9,9 @@ import torch
 from lightning.pytorch.cli import LightningArgumentParser
 
 from sa_preisach.models import EncoderDecoderPreisachNN
-from sa_preisach.models._adaptive_loss_weights import AdaptiveLossWeights
+from sa_preisach.models import (
+    _adaptive_loss_weights as adaptive_loss_weights_module,
+)
 from sa_preisach.nn import (
     PreisachEncoder,
     PreisachGRUEncoder,
@@ -16,6 +19,13 @@ from sa_preisach.nn import (
     PreisachRNNEncoder,
     PreisachTransformerEncoder,
 )
+from sa_preisach.priors import (
+    CompositeDensityPrior,
+    DiagonalDensityPrior,
+    SymmetryDensityPrior,
+)
+
+AdaptiveLossWeights = adaptive_loss_weights_module.AdaptiveLossWeights
 
 
 def _build_encoder(
@@ -215,8 +225,6 @@ def test_lightning_parser_model_requires_encoder(fake_triangle_mesh: None) -> No
 
 
 def test_adaptive_loss_weights_initial_values() -> None:
-    from sa_preisach.models._adaptive_loss_weights import AdaptiveLossWeights
-
     alw = AdaptiveLossWeights(aux_loss_weight=2.0, saturation_reg_weight=0.5)
     assert torch.isclose(alw.log_seq.exp(), torch.tensor(1.0), atol=1e-5)
     assert torch.isclose(alw.log_aux.exp(), torch.tensor(2.0), atol=1e-5)
@@ -224,8 +232,6 @@ def test_adaptive_loss_weights_initial_values() -> None:
 
 
 def test_adaptive_loss_weights_parameters_are_nn_parameters() -> None:
-    from sa_preisach.models._adaptive_loss_weights import AdaptiveLossWeights
-
     expected_param_count = 3
     alw = AdaptiveLossWeights(aux_loss_weight=1.0, saturation_reg_weight=1.0)
     params = list(alw.parameters())
@@ -235,14 +241,6 @@ def test_adaptive_loss_weights_parameters_are_nn_parameters() -> None:
 
 
 def test_prior_leaf_by_key_populated_with_composite(fake_triangle_mesh: None) -> None:
-    import warnings
-
-    from sa_preisach.priors import (
-        CompositeDensityPrior,
-        DiagonalDensityPrior,
-        SymmetryDensityPrior,
-    )
-
     del fake_triangle_mesh
     encoder = _build_encoder(PreisachLSTMEncoder)
     with warnings.catch_warnings():

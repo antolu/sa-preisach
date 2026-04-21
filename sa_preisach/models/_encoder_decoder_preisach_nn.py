@@ -96,7 +96,12 @@ def phase1_loss(
     m_initial = (density * initial_states).sum(dim=-1) / density_sum
     aux_loss = mse_loss(m_initial, m_target)
 
-    loss = physics_loss + aux_loss_weight * aux_loss + saturation_reg_weight * saturation_reg + prior_loss
+    loss = (
+        physics_loss
+        + aux_loss_weight * aux_loss
+        + saturation_reg_weight * saturation_reg
+        + prior_loss
+    )
     return {"loss": loss, "aux_loss": aux_loss, "physics_loss": physics_loss}
 
 
@@ -120,7 +125,12 @@ def phase2_loss(
     physics_loss = torch.zeros(1, device=initial_states.device)
 
     seq_loss = mse_loss(y_hat, target_squeezed)
-    loss = seq_loss + aux_loss_weight * aux_loss + saturation_reg_weight * saturation_reg + prior_loss
+    loss = (
+        seq_loss
+        + aux_loss_weight * aux_loss
+        + saturation_reg_weight * saturation_reg
+        + prior_loss
+    )
     return {"loss": loss, "aux_loss": aux_loss, "physics_loss": physics_loss}
 
 
@@ -135,7 +145,9 @@ def optimizer_step(
     adaptive_loss_start: typing.Literal["all_phases", "phase2_plus"],
     clip_fn: typing.Callable[[torch.optim.Optimizer], None],
 ) -> None:
-    adaptive_active = optimizer_adaptive is not None and (adaptive_loss_start == "all_phases" or step >= phase1_end)
+    adaptive_active = optimizer_adaptive is not None and (
+        adaptive_loss_start == "all_phases" or step >= phase1_end
+    )
 
     if step < phase1_end:
         clip_fn(optimizer_encoder)
@@ -228,7 +240,9 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             activation="relu",
             dropout=0.1,
         )
-        self.density_activation = torch.nn.Sigmoid() if normalized_density else torch.nn.Softplus()
+        self.density_activation = (
+            torch.nn.Sigmoid() if normalized_density else torch.nn.Softplus()
+        )
 
         # Constitutive relation: B_norm = h_scale * H_norm + m_scale * M + m_offset
         # For soft magnetic materials (ARMCO iron), mu0H << B so h_scale ~ 0.
@@ -339,7 +353,9 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         batch_size = encoder_input.shape[0]
 
         # Expand mesh coordinates for batch
-        mesh_coords = self.get_batched_mesh_coords(batch_size)  # [batch_size, n_mesh_points, 2]
+        mesh_coords = self.get_batched_mesh_coords(
+            batch_size
+        )  # [batch_size, n_mesh_points, 2]
 
         # Perturb mesh during training for density network regularization.
         # Skip perturbation when initial_states are provided externally: a
@@ -349,7 +365,9 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         mesh_coords = self._perturb_mesh(mesh_coords, training_and_perturb)
 
         # Compute density weights first
-        density = self.density_from_mesh(mesh_coords, beta=None)  # [batch_size, n_mesh_points]
+        density = self.density_from_mesh(
+            mesh_coords, beta=None
+        )  # [batch_size, n_mesh_points]
 
         if initial_states is None:
             # Concatenate density to mesh coordinates for encoder
@@ -407,7 +425,9 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             )
             for b in range(batch_size)
         ]
-        states_cpu = torch.stack(batch_states, dim=0)  # [batch_size, tgt_seq_len, n_mesh_points]
+        states_cpu = torch.stack(
+            batch_states, dim=0
+        )  # [batch_size, tgt_seq_len, n_mesh_points]
 
         # Move states back to original device
         states = states_cpu.to(h.device)
@@ -420,7 +440,9 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         density_sum = density_for_m.sum(dim=-1, keepdim=True)  # [batch_size, 1]
 
         # M = sum mu(alpha,beta)*s(alpha,beta) / sum mu(alpha,beta), where s in [-1,+1] per hysteron
-        m = torch.sum(density_for_m.unsqueeze(1) * states, dim=-1) / density_sum  # [batch_size, tgt_seq_len]
+        m = (
+            torch.sum(density_for_m.unsqueeze(1) * states, dim=-1) / density_sum
+        )  # [batch_size, tgt_seq_len]
 
         # B_norm = h_scale * H_norm + m_scale * M + m_offset
         b_out = self.h_scale.value * h + self.m_scale.value * m + self.m_offset.value
@@ -449,7 +471,9 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
         """
         return self.base_mesh.unsqueeze(0).expand(batch_size, -1, -1)
 
-    def density_from_mesh(self, mesh_coords: torch.Tensor, beta: torch.Tensor | None = None) -> torch.Tensor:
+    def density_from_mesh(
+        self, mesh_coords: torch.Tensor, beta: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         Compute density values from mesh coordinates.
 
@@ -464,7 +488,9 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             Density values of shape [batch_size, n_mesh_points]
         """
         if beta is not None:  # assume mesh_coords is alpha
-            mesh_coords = torch.cat([beta.unsqueeze(-1), mesh_coords], dim=-1)  # [batch_size, n_mesh_points, 2]
+            mesh_coords = torch.cat(
+                [beta.unsqueeze(-1), mesh_coords], dim=-1
+            )  # [batch_size, n_mesh_points, 2]
         density = self.density(mesh_coords)  # [batch_size, n_mesh_points, 1]
         density = self.density_activation(density)
         return density.squeeze(-1)  # [batch_size, n_mesh_points]
@@ -504,7 +530,9 @@ class EncoderDecoderPreisachNN(BaseModule):
         n_train_samples: int = 0,
         fit_scale_offset: bool = False,
         adaptive_loss_weights: bool = False,
-        adaptive_loss_start: typing.Literal["all_phases", "phase2_plus"] = "phase2_plus",
+        adaptive_loss_start: typing.Literal[
+            "all_phases", "phase2_plus"
+        ] = "phase2_plus",
         lr_adaptive: float = 1e-3,
         temp_min: float | None = None,
         temp_anneal_steps: int = 0,
@@ -699,13 +727,26 @@ class EncoderDecoderPreisachNN(BaseModule):
         step = self.global_step if self.training else float("inf")
         phase1_end = self.hparams["encoder_fit_steps"]
 
-        density_override = self.model.mock_density.unsqueeze(0).expand(batch_size, -1) if step < phase1_end else None
+        density_override = (
+            self.model.mock_density.unsqueeze(0).expand(batch_size, -1)
+            if step < phase1_end
+            else None
+        )
 
         phase2_end = phase1_end + self.hparams["density_fit_steps"]
         temp_min = self.hparams["temp_min"]
-        if temp_min is not None and self.hparams["temp_anneal_steps"] > 0 and step >= phase2_end:
-            anneal_progress = min((step - phase2_end) / self.hparams["temp_anneal_steps"], 1.0)
-            current_temp = self.hparams["temp"] + (temp_min - self.hparams["temp"]) * anneal_progress
+        if (
+            temp_min is not None
+            and self.hparams["temp_anneal_steps"] > 0
+            and step >= phase2_end
+        ):
+            anneal_progress = min(
+                (step - phase2_end) / self.hparams["temp_anneal_steps"], 1.0
+            )
+            current_temp = (
+                self.hparams["temp"]
+                + (temp_min - self.hparams["temp"]) * anneal_progress
+            )
         else:
             current_temp = self.hparams["temp"]
 
@@ -744,12 +785,16 @@ class EncoderDecoderPreisachNN(BaseModule):
             mask_pos = beta_ph < h_last
             mask_neg = alpha_ph > h_last
             loss_pos = (
-                mse_loss(initial_states[mask_pos], torch.ones_like(initial_states[mask_pos]))
+                mse_loss(
+                    initial_states[mask_pos], torch.ones_like(initial_states[mask_pos])
+                )
                 if mask_pos.any()
                 else torch.tensor(0.0, device=initial_states.device)
             )
             loss_neg = (
-                mse_loss(initial_states[mask_neg], -torch.ones_like(initial_states[mask_neg]))
+                mse_loss(
+                    initial_states[mask_neg], -torch.ones_like(initial_states[mask_neg])
+                )
                 if mask_neg.any()
                 else torch.tensor(0.0, device=initial_states.device)
             )
@@ -758,10 +803,16 @@ class EncoderDecoderPreisachNN(BaseModule):
             physics_loss = torch.zeros(1, device=initial_states.device)
 
         prior_losses_raw: dict[str, torch.Tensor] = (
-            self.model.density_prior(mesh_coords, density) if self.model.density_prior is not None else {}
+            self.model.density_prior(mesh_coords, density)
+            if self.model.density_prior is not None
+            else {}
         )
 
-        density_out = self.model.mock_density.unsqueeze(0).expand(batch_size, -1) if step < phase1_end else density
+        density_out = (
+            self.model.mock_density.unsqueeze(0).expand(batch_size, -1)
+            if step < phase1_end
+            else density
+        )
 
         loss_unweighted: torch.Tensor | None = None
 
@@ -778,7 +829,10 @@ class EncoderDecoderPreisachNN(BaseModule):
                 return loss_term / (2.0 * (2.0 * log_s).exp()) + log_s
 
             prior_losses_weighted: dict[str, torch.Tensor] = (
-                {k: _hw(v, self._prior_leaf_by_key[k].log_weight) for k, v in prior_losses_raw.items()}
+                {
+                    k: _hw(v, self._prior_leaf_by_key[k].log_weight)
+                    for k, v in prior_losses_raw.items()
+                }
                 if prior_losses_raw
                 else {}
             )
@@ -794,19 +848,34 @@ class EncoderDecoderPreisachNN(BaseModule):
             )
 
             if step < phase1_end:
-                loss_unweighted = physics_loss + aux_loss + saturation_reg + raw_prior_sum
-                loss = _hw(physics_loss, log_s_seq) + _hw(aux_loss, log_s_aux) + _hw(saturation_reg, log_s_sat) + prior_loss_weighted
+                loss_unweighted = (
+                    physics_loss + aux_loss + saturation_reg + raw_prior_sum
+                )
+                loss = (
+                    _hw(physics_loss, log_s_seq)
+                    + _hw(aux_loss, log_s_aux)
+                    + _hw(saturation_reg, log_s_sat)
+                    + prior_loss_weighted
+                )
             else:
                 seq_loss = mse_loss(y_hat, target_squeezed)
                 loss_unweighted = seq_loss + aux_loss + saturation_reg + raw_prior_sum
-                loss = _hw(seq_loss, log_s_seq) + _hw(aux_loss, log_s_aux) + _hw(saturation_reg, log_s_sat) + prior_loss_weighted
+                loss = (
+                    _hw(seq_loss, log_s_seq)
+                    + _hw(aux_loss, log_s_aux)
+                    + _hw(saturation_reg, log_s_sat)
+                    + prior_loss_weighted
+                )
 
             prior_losses = prior_losses_raw
             prior_loss = prior_loss_weighted
 
         else:
             prior_losses = (
-                {k: v * self._prior_leaf_by_key[k].weight for k, v in prior_losses_raw.items()}
+                {
+                    k: v * self._prior_leaf_by_key[k].weight
+                    for k, v in prior_losses_raw.items()
+                }
                 if prior_losses_raw
                 else {}
             )
@@ -873,17 +942,24 @@ class EncoderDecoderPreisachNN(BaseModule):
                 "seq": self.adaptive_weights.log_seq.exp().detach(),
                 "aux": self.adaptive_weights.log_aux.exp().detach(),
                 "sat": self.adaptive_weights.log_sat.exp().detach(),
-                **{f"prior/{k}": leaf.log_weight.exp().detach() for k, leaf in self._prior_leaf_by_key.items()},
+                **{
+                    f"prior/{k}": leaf.log_weight.exp().detach()
+                    for k, leaf in self._prior_leaf_by_key.items()
+                },
             }
 
         return result
 
-    def training_step(self, batch: EncoderDecoderTargetSample[torch.Tensor], batch_idx: int) -> torch.Tensor:
+    def training_step(
+        self, batch: EncoderDecoderTargetSample[torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
         optimizers = self.optimizers()
         optimizer_encoder, optimizer_density = optimizers[0], optimizers[1]
         optimizer_scale = optimizers[2] if self.hparams["fit_scale_offset"] else None
         adaptive_idx = 3 if self.hparams["fit_scale_offset"] else 2
-        optimizer_adaptive = optimizers[adaptive_idx] if self.hparams["adaptive_loss_weights"] else None
+        optimizer_adaptive = (
+            optimizers[adaptive_idx] if self.hparams["adaptive_loss_weights"] else None
+        )
 
         out = self.common_step(batch, batch_idx)
         loss = out["loss"]
@@ -925,7 +1001,10 @@ class EncoderDecoderPreisachNN(BaseModule):
                     schedulers[2].step()
             if self.hparams["adaptive_loss_weights"]:
                 adaptive_sched_idx = 3 if self.hparams["fit_scale_offset"] else 2
-                if self.hparams["adaptive_loss_start"] == "all_phases" or step >= phase1_end:
+                if (
+                    self.hparams["adaptive_loss_start"] == "all_phases"
+                    or step >= phase1_end
+                ):
                     schedulers[adaptive_sched_idx].step()
 
         for tag, key in {
@@ -953,8 +1032,12 @@ class EncoderDecoderPreisachNN(BaseModule):
             for k, v in out["adaptive_weights"].items():
                 self.log(f"train/adaptive_weight/{k}", v, on_step=True, on_epoch=False)
 
-        self.log("train/m_scale", self.model.m_scale.value, on_step=True, on_epoch=False)
-        self.log("train/m_offset", self.model.m_offset.value, on_step=True, on_epoch=False)
+        self.log(
+            "train/m_scale", self.model.m_scale.value, on_step=True, on_epoch=False
+        )
+        self.log(
+            "train/m_offset", self.model.m_offset.value, on_step=True, on_epoch=False
+        )
 
         return loss
 
@@ -1033,7 +1116,9 @@ class EncoderDecoderPreisachNN(BaseModule):
                 self.model.m_scale.raw_parameter,
                 self.model.m_offset.raw_parameter,
             ]
-            optimizer_scale = torch.optim.AdamW(scale_params, lr=self.hparams["lr_scale"], weight_decay=0.0)
+            optimizer_scale = torch.optim.AdamW(
+                scale_params, lr=self.hparams["lr_scale"], weight_decay=0.0
+            )
             scheduler_scale = torch.optim.lr_scheduler.StepLR(
                 optimizer_scale,
                 step_size=self.hparams["lr_step_interval"],

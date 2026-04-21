@@ -26,7 +26,6 @@ def test_diagonal_prior_has_log_weight_parameter() -> None:
 
 
 def test_symmetry_prior_has_log_weight_parameter() -> None:
-
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         prior = SymmetryDensityPrior(weight=3.0)
@@ -64,7 +63,6 @@ def test_symmetry_forward_returns_unweighted_loss() -> None:
 
 
 def test_composite_prior_forward_aggregates_unweighted() -> None:
-
     p1 = DiagonalDensityPrior(weight=2.0)
 
     with warnings.catch_warnings():
