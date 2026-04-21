@@ -343,6 +343,50 @@ def test_configure_optimizers_returns_four_when_adaptive(
     assert len(schedulers) == expected_four
 
 
+def _make_model_and_batch(
+    *,
+    adaptive: bool = False,
+) -> tuple[EncoderDecoderPreisachNN, dict]:
+    encoder = _build_encoder(PreisachLSTMEncoder)
+    model = EncoderDecoderPreisachNN(
+        mesh_scale=0.5,
+        hidden_dim=8,
+        num_layers=2,
+        compile_model=False,
+        mesh_perturbation_std=0.0,
+        encoder=encoder,
+        adaptive_loss_weights=adaptive,
+        encoder_fit_steps=0,
+        density_fit_steps=0,
+    )
+    batch = {
+        "encoder_input": torch.rand(2, 5, 2),
+        "decoder_input": torch.rand(2, 4, 1),
+        "target": torch.rand(2, 4, 1),
+    }
+    return model, batch
+
+
+def test_common_step_has_loss_unweighted_when_adaptive(
+    fake_triangle_mesh: None,
+) -> None:
+    del fake_triangle_mesh
+    model, batch = _make_model_and_batch(adaptive=True)
+    model.eval()
+    out = model.common_step(batch, 0)
+    assert "loss_unweighted" in out
+
+
+def test_common_step_no_loss_unweighted_when_not_adaptive(
+    fake_triangle_mesh: None,
+) -> None:
+    del fake_triangle_mesh
+    model, batch = _make_model_and_batch(adaptive=False)
+    model.eval()
+    out = model.common_step(batch, 0)
+    assert "loss_unweighted" not in out
+
+
 def test_configure_optimizers_returns_two_when_not_adaptive(
     fake_triangle_mesh: None,
 ) -> None:

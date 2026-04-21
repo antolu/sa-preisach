@@ -673,7 +673,7 @@ class EncoderDecoderPreisachNN(BaseModule):
             temp=temp,
         )
 
-    def common_step(
+    def common_step(  # noqa: PLR0912, PLR0915
         self,
         batch: EncoderDecoderTargetSample[torch.Tensor],
         batch_idx: int,
@@ -744,58 +744,136 @@ class EncoderDecoderPreisachNN(BaseModule):
         # than the saturated boundary; weight is small so it doesn't fight the physics loss.
         saturation_reg = (initial_states**2).mean()
 
+        density_for_aux = self.model.mock_density if step < phase1_end else density
+        density_sum_aux = density_for_aux.sum(dim=-1)
+        m_initial = (density_for_aux * initial_states).sum(dim=-1) / density_sum_aux
+        aux_loss = mse_loss(m_initial, m_target)
+
+        if step < phase1_end:
+            h_last = y0.unsqueeze(-1)
+            alpha_ph = mesh_coords[..., 1]
+            beta_ph = mesh_coords[..., 0]
+            mask_pos = beta_ph < h_last
+            mask_neg = alpha_ph > h_last
+            loss_pos = (
+                mse_loss(
+                    initial_states[mask_pos], torch.ones_like(initial_states[mask_pos])
+                )
+                if mask_pos.any()
+                else torch.tensor(0.0, device=initial_states.device)
+            )
+            loss_neg = (
+                mse_loss(
+                    initial_states[mask_neg], -torch.ones_like(initial_states[mask_neg])
+                )
+                if mask_neg.any()
+                else torch.tensor(0.0, device=initial_states.device)
+            )
+            physics_loss: torch.Tensor = 0.5 * (loss_pos + loss_neg)
+        else:
+            physics_loss = torch.zeros(1, device=initial_states.device)
+
         prior_losses_raw: dict[str, torch.Tensor] = (
             self.model.density_prior(mesh_coords, density)
             if self.model.density_prior is not None
             else {}
         )
-        prior_losses: dict[str, torch.Tensor] = (
-            {
-                k: v * self._prior_leaf_by_key[k].weight
-                for k, v in prior_losses_raw.items()
-            }
-            if prior_losses_raw
-            else {}
-        )
-        prior_loss = (
-            sum(prior_losses.values())  # type: ignore[arg-type]
-            if prior_losses
-            else torch.zeros(1, device=density.device)
-        )
 
-        # During phase 1 the density network is not yet trained; expose mock_density
-        # in the output dict so callbacks see a meaningful density instead of noise.
         density_out = (
             self.model.mock_density.unsqueeze(0).expand(batch_size, -1)
             if step < phase1_end
             else density
         )
 
-        if step < phase1_end:
-            out = phase1_loss(
-                initial_states=initial_states,
-                y0=y0,
-                mesh_coords=mesh_coords,
-                density=self.model.mock_density,
-                m_target=m_target,
-                saturation_reg=saturation_reg,
-                prior_loss=prior_loss,
-                aux_loss_weight=self.hparams["aux_loss_weight"],
-                saturation_reg_weight=self.hparams["saturation_reg_weight"],
+        loss_unweighted: torch.Tensor | None = None
+
+        if self.adaptive_weights is not None:
+            w_seq = self.adaptive_weights.log_seq.exp()
+            w_aux = self.adaptive_weights.log_aux.exp()
+            w_sat = self.adaptive_weights.log_sat.exp()
+
+            prior_losses_weighted: dict[str, torch.Tensor] = (
+                {
+                    k: v * self._prior_leaf_by_key[k].log_weight.exp()
+                    for k, v in prior_losses_raw.items()
+                }
+                if prior_losses_raw
+                else {}
             )
+            prior_loss_weighted = (
+                sum(prior_losses_weighted.values())  # type: ignore[arg-type]
+                if prior_losses_weighted
+                else torch.zeros(1, device=density.device)
+            )
+            raw_prior_sum = (
+                sum(prior_losses_raw.values())  # type: ignore[arg-type]
+                if prior_losses_raw
+                else torch.zeros(1, device=density.device)
+            )
+
+            if step < phase1_end:
+                loss_unweighted = (
+                    physics_loss + aux_loss + saturation_reg + raw_prior_sum
+                )
+                loss = (
+                    w_seq * physics_loss
+                    + w_aux * aux_loss
+                    + w_sat * saturation_reg
+                    + prior_loss_weighted
+                )
+            else:
+                seq_loss = mse_loss(y_hat, target_squeezed)
+                loss_unweighted = seq_loss + aux_loss + saturation_reg + raw_prior_sum
+                loss = (
+                    w_seq * seq_loss
+                    + w_aux * aux_loss
+                    + w_sat * saturation_reg
+                    + prior_loss_weighted
+                )
+
+            prior_losses = prior_losses_raw
+            prior_loss = prior_loss_weighted
+
         else:
-            out = phase2_loss(
-                y_hat=y_hat,
-                target_squeezed=target_squeezed,
-                density=density,
-                initial_states=initial_states,
-                m_target=m_target,
-                saturation_reg=saturation_reg,
-                prior_loss=prior_loss,
-                aux_loss_weight=self.hparams["aux_loss_weight"],
-                saturation_reg_weight=self.hparams["saturation_reg_weight"],
+            prior_losses = (
+                {
+                    k: v * self._prior_leaf_by_key[k].weight
+                    for k, v in prior_losses_raw.items()
+                }
+                if prior_losses_raw
+                else {}
             )
-        loss, aux_loss, physics_loss = out["loss"], out["aux_loss"], out["physics_loss"]
+            prior_loss = (
+                sum(prior_losses.values())  # type: ignore[arg-type]
+                if prior_losses
+                else torch.zeros(1, device=density.device)
+            )
+
+            if step < phase1_end:
+                _out = phase1_loss(
+                    initial_states=initial_states,
+                    y0=y0,
+                    mesh_coords=mesh_coords,
+                    density=self.model.mock_density,
+                    m_target=m_target,
+                    saturation_reg=saturation_reg,
+                    prior_loss=prior_loss,
+                    aux_loss_weight=self.hparams["aux_loss_weight"],
+                    saturation_reg_weight=self.hparams["saturation_reg_weight"],
+                )
+            else:
+                _out = phase2_loss(
+                    y_hat=y_hat,
+                    target_squeezed=target_squeezed,
+                    density=density,
+                    initial_states=initial_states,
+                    m_target=m_target,
+                    saturation_reg=saturation_reg,
+                    prior_loss=prior_loss,
+                    aux_loss_weight=self.hparams["aux_loss_weight"],
+                    saturation_reg_weight=self.hparams["saturation_reg_weight"],
+                )
+            loss = _out["loss"]
 
         with torch.no_grad():
             residuals = y_hat.detach() - target_squeezed.detach()
@@ -803,7 +881,7 @@ class EncoderDecoderPreisachNN(BaseModule):
             rmse = mse.sqrt()
             mae = residuals.abs().mean()
 
-        return {
+        result: dict[str, torch.Tensor] = {
             "loss": loss,
             "aux_loss": aux_loss.detach(),
             "physics_loss": physics_loss.detach(),
@@ -820,6 +898,9 @@ class EncoderDecoderPreisachNN(BaseModule):
             "initial_states": initial_states.detach().clone(),
             "mesh_coords": mesh_coords.detach().clone(),
         }
+        if loss_unweighted is not None:
+            result["loss_unweighted"] = loss_unweighted.detach()
+        return result
 
     def training_step(
         self, batch: EncoderDecoderTargetSample[torch.Tensor], batch_idx: int
