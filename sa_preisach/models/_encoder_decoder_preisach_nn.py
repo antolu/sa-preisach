@@ -900,6 +900,18 @@ class EncoderDecoderPreisachNN(BaseModule):
         }
         if loss_unweighted is not None:
             result["loss_unweighted"] = loss_unweighted.detach()
+
+        if self.adaptive_weights is not None:
+            result["adaptive_weights"] = {
+                "seq": self.adaptive_weights.log_seq.exp().detach(),
+                "aux": self.adaptive_weights.log_aux.exp().detach(),
+                "sat": self.adaptive_weights.log_sat.exp().detach(),
+                **{
+                    f"prior/{k}": leaf.log_weight.exp().detach()
+                    for k, leaf in self._prior_leaf_by_key.items()
+                },
+            }
+
         return result
 
     def training_step(
@@ -974,6 +986,11 @@ class EncoderDecoderPreisachNN(BaseModule):
         for k, v in out["prior_losses"].items():
             self.log(f"train/prior/{k}", v, on_step=True, on_epoch=False)
 
+        if self.hparams["adaptive_loss_weights"]:
+            self.log("train/loss_unweighted", out["loss_unweighted"], on_step=True, on_epoch=False)
+            for k, v in out["adaptive_weights"].items():
+                self.log(f"train/adaptive_weight/{k}", v, on_step=True, on_epoch=False)
+
         self.log(
             "train/m_scale", self.model.m_scale.value, on_step=True, on_epoch=False
         )
@@ -1001,6 +1018,9 @@ class EncoderDecoderPreisachNN(BaseModule):
             "validation/mae": "mae",
         }.items():
             self.log(tag, out[key], prog_bar=True, on_step=False, on_epoch=True)
+
+        if self.hparams["adaptive_loss_weights"]:
+            self.log("validation/loss_unweighted", out["loss_unweighted"], on_step=False, on_epoch=True)
 
         return out
 

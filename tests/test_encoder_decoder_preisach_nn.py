@@ -346,7 +346,7 @@ def test_configure_optimizers_returns_four_when_adaptive(
 def _make_model_and_batch(
     *,
     adaptive: bool = False,
-) -> tuple[EncoderDecoderPreisachNN, dict]:
+) -> tuple[EncoderDecoderPreisachNN, dict[str, typing.Any]]:
     encoder = _build_encoder(PreisachLSTMEncoder)
     model = EncoderDecoderPreisachNN(
         mesh_scale=0.5,
@@ -359,7 +359,7 @@ def _make_model_and_batch(
         encoder_fit_steps=0,
         density_fit_steps=0,
     )
-    batch = {
+    batch: dict[str, typing.Any] = {
         "encoder_input": torch.rand(2, 5, 2),
         "decoder_input": torch.rand(2, 4, 1),
         "target": torch.rand(2, 4, 1),
@@ -405,3 +405,15 @@ def test_configure_optimizers_returns_two_when_not_adaptive(
     expected_two = 2
     assert len(optimizers) == expected_two
     assert len(schedulers) == expected_two
+
+
+def test_common_step_returns_adaptive_weight_values(fake_triangle_mesh: None) -> None:
+    del fake_triangle_mesh
+    model, batch = _make_model_and_batch(adaptive=True)
+    model.eval()
+    out = model.common_step(batch, 0)
+    assert "adaptive_weights" in out
+    aw = out["adaptive_weights"]
+    assert "seq" in aw
+    assert "aux" in aw
+    assert "sat" in aw
