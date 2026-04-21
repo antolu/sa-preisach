@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import warnings
+
 import torch
-from sa_preisach.priors import DiagonalDensityPrior, SymmetryDensityPrior, DensityPrior
+
+from sa_preisach.priors import (
+    CompositeDensityPrior,
+    DiagonalDensityPrior,
+    SymmetryDensityPrior,
+)
 
 
 def _mesh_and_density(n: int = 4) -> tuple[torch.Tensor, torch.Tensor]:
@@ -19,7 +26,7 @@ def test_diagonal_prior_has_log_weight_parameter() -> None:
 
 
 def test_symmetry_prior_has_log_weight_parameter() -> None:
-    import warnings
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         prior = SymmetryDensityPrior(weight=3.0)
@@ -39,7 +46,6 @@ def test_diagonal_forward_returns_unweighted_loss() -> None:
 
 
 def test_symmetry_forward_returns_unweighted_loss() -> None:
-    import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         prior = SymmetryDensityPrior(weight=5.0)
@@ -58,9 +64,9 @@ def test_symmetry_forward_returns_unweighted_loss() -> None:
 
 
 def test_composite_prior_forward_aggregates_unweighted() -> None:
-    from sa_preisach.priors import CompositeDensityPrior
+
     p1 = DiagonalDensityPrior(weight=2.0)
-    import warnings
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         p2 = SymmetryDensityPrior(weight=3.0)

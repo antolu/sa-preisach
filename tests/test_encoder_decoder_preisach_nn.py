@@ -8,6 +8,7 @@ import torch
 from lightning.pytorch.cli import LightningArgumentParser
 
 from sa_preisach.models import EncoderDecoderPreisachNN
+from sa_preisach.models._adaptive_loss_weights import AdaptiveLossWeights
 from sa_preisach.nn import (
     PreisachEncoder,
     PreisachGRUEncoder,
@@ -283,7 +284,6 @@ def test_adaptive_loss_weights_module_created_when_enabled(
     fake_triangle_mesh: None,
 ) -> None:
     del fake_triangle_mesh
-    from sa_preisach.models._adaptive_loss_weights import AdaptiveLossWeights
 
     encoder = _build_encoder(PreisachLSTMEncoder)
     model = EncoderDecoderPreisachNN(

@@ -218,7 +218,7 @@ class EncoderDecoderPreisachNNModel(torch.nn.Module):
             beta_m = base_mesh[:, 0]
             alpha_m = base_mesh[:, 1]
             mock_density = torch.exp(-(alpha_m - beta_m) / 0.1)
-            mock_density = mock_density / mock_density.sum()
+            mock_density /= mock_density.sum()
         self.register_buffer("mock_density", mock_density)
 
         self.encoder = encoder
@@ -850,7 +850,7 @@ class EncoderDecoderPreisachNN(BaseModule):
             )
 
             if step < phase1_end:
-                _out = phase1_loss(
+                out = phase1_loss(
                     initial_states=initial_states,
                     y0=y0,
                     mesh_coords=mesh_coords,
@@ -862,7 +862,7 @@ class EncoderDecoderPreisachNN(BaseModule):
                     saturation_reg_weight=self.hparams["saturation_reg_weight"],
                 )
             else:
-                _out = phase2_loss(
+                out = phase2_loss(
                     y_hat=y_hat,
                     target_squeezed=target_squeezed,
                     density=density,
@@ -873,7 +873,7 @@ class EncoderDecoderPreisachNN(BaseModule):
                     aux_loss_weight=self.hparams["aux_loss_weight"],
                     saturation_reg_weight=self.hparams["saturation_reg_weight"],
                 )
-            loss = _out["loss"]
+            loss = out["loss"]
 
         with torch.no_grad():
             residuals = y_hat.detach() - target_squeezed.detach()
@@ -920,9 +920,9 @@ class EncoderDecoderPreisachNN(BaseModule):
         optimizers = self.optimizers()
         optimizer_encoder, optimizer_density = optimizers[0], optimizers[1]
         optimizer_scale = optimizers[2] if self.hparams["fit_scale_offset"] else None
-        _adaptive_idx = 3 if self.hparams["fit_scale_offset"] else 2
+        adaptive_idx = 3 if self.hparams["fit_scale_offset"] else 2
         optimizer_adaptive = (
-            optimizers[_adaptive_idx] if self.hparams["adaptive_loss_weights"] else None
+            optimizers[adaptive_idx] if self.hparams["adaptive_loss_weights"] else None
         )
 
         out = self.common_step(batch, batch_idx)
@@ -964,12 +964,12 @@ class EncoderDecoderPreisachNN(BaseModule):
                 if self.hparams["fit_scale_offset"]:
                     schedulers[2].step()
             if self.hparams["adaptive_loss_weights"]:
-                _adaptive_sched_idx = 3 if self.hparams["fit_scale_offset"] else 2
+                adaptive_sched_idx = 3 if self.hparams["fit_scale_offset"] else 2
                 if (
                     self.hparams["adaptive_loss_start"] == "all_phases"
                     or step >= phase1_end
                 ):
-                    schedulers[_adaptive_sched_idx].step()
+                    schedulers[adaptive_sched_idx].step()
 
         for tag, key in {
             "train/loss": "loss",
@@ -987,7 +987,12 @@ class EncoderDecoderPreisachNN(BaseModule):
             self.log(f"train/prior/{k}", v, on_step=True, on_epoch=False)
 
         if self.hparams["adaptive_loss_weights"]:
-            self.log("train/loss_unweighted", out["loss_unweighted"], on_step=True, on_epoch=False)
+            self.log(
+                "train/loss_unweighted",
+                out["loss_unweighted"],
+                on_step=True,
+                on_epoch=False,
+            )
             for k, v in out["adaptive_weights"].items():
                 self.log(f"train/adaptive_weight/{k}", v, on_step=True, on_epoch=False)
 
@@ -1020,7 +1025,12 @@ class EncoderDecoderPreisachNN(BaseModule):
             self.log(tag, out[key], prog_bar=True, on_step=False, on_epoch=True)
 
         if self.hparams["adaptive_loss_weights"]:
-            self.log("validation/loss_unweighted", out["loss_unweighted"], on_step=False, on_epoch=True)
+            self.log(
+                "validation/loss_unweighted",
+                out["loss_unweighted"],
+                on_step=False,
+                on_epoch=True,
+            )
 
         return out
 

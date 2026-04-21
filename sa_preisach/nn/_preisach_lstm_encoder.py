@@ -66,7 +66,7 @@ class PreisachLSTMEncoder(PreisachEncoder):
 
         assert batch_size == batch_size_mesh
 
-        lstm_out, (h_n, _c_n) = self.lstm(sequence)
+        _lstm_out, (h_n, _c_n) = self.lstm(sequence)
 
         last_hidden = h_n[-1]
 

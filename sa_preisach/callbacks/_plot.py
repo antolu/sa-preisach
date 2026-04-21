@@ -171,7 +171,7 @@ class PlotHysteresisCallback(L.pytorch.callbacks.Callback):
 
                 y0 = enc_in[:, -1, 0] if i == 0 else prev_y0
 
-                y_hat, density, _m, states_used, mesh_coords = model(
+                y_hat, _density, _m, states_used, mesh_coords = model(
                     encoder_input=enc_in,
                     decoder_input=dec_in[..., 0:1],
                     y0=y0,

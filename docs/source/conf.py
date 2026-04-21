@@ -100,7 +100,7 @@ def hijack_module_name_replacement() -> None:
 hijack_module_name_replacement()
 
 
-def remove__init__from_docs(  # noqa: PLR0913
+def remove__init__from_docs(
     app: sphinx.application.Sphinx,
     what: str,
     name: str,
