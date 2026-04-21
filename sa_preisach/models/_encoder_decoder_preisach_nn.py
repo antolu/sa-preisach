@@ -21,6 +21,7 @@ from ..utils import (
     get_states,
     make_mesh_size_function,
 )
+from ._adaptive_loss_weights import AdaptiveLossWeights
 from ._base import BaseModule
 
 log = logging.getLogger(__name__)
@@ -507,6 +508,9 @@ class EncoderDecoderPreisachNN(BaseModule):
         density_prior: DensityPrior | None = None,
         n_train_samples: int = 0,
         fit_scale_offset: bool = False,
+        adaptive_loss_weights: bool = False,
+        adaptive_loss_start: typing.Literal["all_phases", "phase2_plus"] = "phase2_plus",
+        lr_adaptive: float = 1e-3,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["encoder", "density_prior"])
@@ -531,6 +535,15 @@ class EncoderDecoderPreisachNN(BaseModule):
         self._prior_leaf_by_key: dict[str, DensityPrior] = {}
         if density_prior is not None:
             self._collect_prior_leaves(density_prior)
+
+        self.adaptive_weights: AdaptiveLossWeights | None = (
+            AdaptiveLossWeights(
+                aux_loss_weight=aux_loss_weight,
+                saturation_reg_weight=saturation_reg_weight,
+            )
+            if adaptive_loss_weights
+            else None
+        )
 
         self.automatic_optimization = False
 
