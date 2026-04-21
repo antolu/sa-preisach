@@ -217,24 +217,22 @@ Combined loss
              + exp(λ_sat) * loss_sat
              + Σ exp(λ_prior_i) * loss_prior_i
 
-    where λ_* are learned parameters updated by maximizing the weighted loss
-    (negated gradient step).
+    where λ_* are learned log-scale noise parameters (see Self-adaptive loss weighting).
 
 Self-adaptive loss weighting
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Enabled with ``adaptive_loss_weights=True``. Each loss term is assigned a learned
-log-weight parameter ``λᵢ`` (an ``nn.Parameter``), and the combined loss becomes:
+log-scale noise parameter ``log_s`` (an ``nn.Parameter``), and the combined loss uses
+the Kendall & Gal homoscedastic uncertainty formulation:
 
 .. math::
 
-    \mathcal{L} = \sum_i \exp(\lambda_i) \cdot L_i
+    \mathcal{L} = \sum_i \left( \frac{L_i}{2 \exp(2 \log s_i)} + \log s_i \right)
 
-The model parameters are updated to **minimize** this weighted loss. The weight
-parameters ``λᵢ`` are updated to **maximize** it (gradients are negated before
-the adaptive optimizer steps). This pushes weight mass toward whichever term the
-model is currently failing at, providing automatic loss balancing without manual
-tuning of scalar weights.
+The ``log_s`` penalty term is self-regularizing: increasing ``log_s`` down-weights the
+scaled loss but pays an additive ``log_s`` cost, creating a natural equilibrium. No
+gradient negation or weight decay is needed.
 
 Hyperparameters
 ^^^^^^^^^^^^^^^
@@ -280,6 +278,76 @@ Note on ``DensityPrior``
 ``weight`` float on each prior (used when ``adaptive_loss_weights=False``) is
 applied at the ``common_step`` call site, not inside ``forward()``. The learned
 ``log_weight`` parameter on each leaf prior is used when SA-PINN is active.
+
+Density priors
+--------------
+
+``DensityPrior`` subclasses add soft constraints on the learned density distribution
+``μ(β, α)``. They are composed with ``CompositeDensityPrior`` and passed via the
+``density_prior`` argument. Each prior returns **unweighted** loss values; weighting
+is applied at the ``common_step`` call site (static ``weight`` float, or learned
+``log_weight`` in SA-PINN mode).
+
+All priors inherit ``log_weight: nn.Parameter`` from ``DensityPrior`` and are
+automatically included in the adaptive optimizer when ``adaptive_loss_weights=True``.
+
+``DiagonalDensityPrior``
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Penalizes density mass far from the ``α = β`` diagonal::
+
+    loss = mean( Σ μᵢ (αᵢ - βᵢ)² / Σ μᵢ )
+
+Pushes hysterons toward small coercivity (narrow loops). Universally useful as a
+baseline regularizer.
+
+``CentroidDensityPrior``
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Penalizes the density-weighted centroid being far from the origin::
+
+    loss = mean( Σ μᵢ (αᵢ + βᵢ)/2 / Σ μᵢ )
+
+Pulls mass toward small ``(α, β)`` — hysterons that flip at low fields. Use for
+soft magnetic materials where most hysteretic activity occurs near zero field.
+
+``BoundaryDensityPrior``
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Penalizes density mass near the triangle boundary via an exponential proximity term::
+
+    margin_i = min(α_i,  1 - β_i,  α_i - β_i)
+    loss = mean( Σ μᵢ exp(-margin_i / σ) / Σ μᵢ )
+
+The ``sigma`` parameter (default ``0.05``) controls how close to the boundary the
+penalty activates. Prevents degenerate solutions where hysterons cluster at the
+corners or edges of the Preisach triangle.
+
+``EntropyDensityPrior``
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Maximizes the entropy of the normalized density distribution::
+
+    p_i = μᵢ / Σ μⱼ
+    loss = -mean( Σ p_i log(p_i) )     [negated so minimizing reduces entropy loss]
+
+Encourages a spread-out coercivity distribution. Useful as a regularizer against
+delta-like collapse to a single hysteron cluster.
+
+Material-specific combinations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
++---------------------------+------------------------------------------+
+| Material type             | Suggested priors                         |
++===========================+==========================================+
+| Soft magnet, low-field    | ``Diagonal + Centroid``                  |
++---------------------------+------------------------------------------+
+| Soft magnet, broad dist.  | ``Diagonal + Entropy``                   |
++---------------------------+------------------------------------------+
+| Any, avoid degeneracy     | ``+ Boundary``                           |
++---------------------------+------------------------------------------+
+| Symmetric loop            | ``+ Symmetry``                           |
++---------------------------+------------------------------------------+
 
 Multi-window rollout
 ---------------------
