@@ -527,21 +527,36 @@ class EncoderDecoderPreisachNN(BaseModule):
         # Register prior as submodule so it moves to the correct device with the model.
         # SymmetryDensityPrior needs the density network injected after model construction.
         self.model.density_prior = density_prior
-        if density_prior is not None:
-            self._inject_density_net(density_prior)
-
+        self._prior_leaves: list[DensityPrior] = []
         self._prior_leaf_by_key: dict[str, DensityPrior] = {}
+        if density_prior is not None:
+            self._collect_prior_leaves(density_prior)
 
         self.automatic_optimization = False
 
-    def _inject_density_net(self, prior: DensityPrior) -> None:
+    def _collect_prior_leaves(self, prior: DensityPrior) -> None:
         from ..priors import CompositeDensityPrior, SymmetryDensityPrior
 
-        if isinstance(prior, SymmetryDensityPrior):
-            prior.density_net = self.model.density_from_mesh
-        elif isinstance(prior, CompositeDensityPrior):
+        if isinstance(prior, CompositeDensityPrior):
             for p in prior.priors:
-                self._inject_density_net(p)
+                self._collect_prior_leaves(p)
+        else:
+            if isinstance(prior, SymmetryDensityPrior):
+                prior.density_net = self.model.density_from_mesh
+            was_training = self.model.training
+            self.model.eval()
+            with torch.no_grad():
+                dummy_mesh = self.model.base_mesh.unsqueeze(0)[:, :1, :]
+                dummy_density = torch.ones(1, 1)
+                try:
+                    sample = prior(dummy_mesh, dummy_density)
+                except Exception:
+                    sample = {}
+            if was_training:
+                self.model.train()
+            for k in sample:
+                self._prior_leaf_by_key[k] = prior
+            self._prior_leaves.append(prior)
 
     def on_fit_start(self) -> None:
         log.info(f"Number of mesh points: {self.model.n_mesh_points}")
@@ -706,10 +721,14 @@ class EncoderDecoderPreisachNN(BaseModule):
             if self.model.density_prior is not None
             else {}
         )
-        prior_losses: dict[str, torch.Tensor] = {
-            k: v * self._prior_leaf_by_key[k].weight
-            for k, v in prior_losses_raw.items()
-        } if prior_losses_raw else {}
+        prior_losses: dict[str, torch.Tensor] = (
+            {
+                k: v * self._prior_leaf_by_key[k].weight
+                for k, v in prior_losses_raw.items()
+            }
+            if prior_losses_raw
+            else {}
+        )
         prior_loss = (
             sum(prior_losses.values())  # type: ignore[arg-type]
             if prior_losses

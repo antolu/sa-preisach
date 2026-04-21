@@ -231,3 +231,49 @@ def test_adaptive_loss_weights_parameters_are_nn_parameters() -> None:
     assert len(params) == expected_param_count
     for p in params:
         assert isinstance(p, torch.nn.Parameter)
+
+
+def test_prior_leaf_by_key_populated_with_composite(fake_triangle_mesh: None) -> None:
+    import warnings
+
+    from sa_preisach.priors import (
+        CompositeDensityPrior,
+        DiagonalDensityPrior,
+        SymmetryDensityPrior,
+    )
+
+    del fake_triangle_mesh
+    encoder = _build_encoder(PreisachLSTMEncoder)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        prior = CompositeDensityPrior(
+            DiagonalDensityPrior(weight=1.0),
+            SymmetryDensityPrior(weight=1.0),
+        )
+    model = EncoderDecoderPreisachNN(
+        mesh_scale=0.5,
+        hidden_dim=8,
+        num_layers=2,
+        compile_model=False,
+        mesh_perturbation_std=0.0,
+        encoder=encoder,
+        density_prior=prior,
+    )
+    assert "diagonal" in model._prior_leaf_by_key  # noqa: SLF001
+    assert "symmetry" in model._prior_leaf_by_key  # noqa: SLF001
+    assert len(model._prior_leaves) == 2  # noqa: SLF001, PLR2004
+
+
+def test_prior_leaf_by_key_empty_without_prior(fake_triangle_mesh: None) -> None:
+    del fake_triangle_mesh
+    encoder = _build_encoder(PreisachLSTMEncoder)
+    model = EncoderDecoderPreisachNN(
+        mesh_scale=0.5,
+        hidden_dim=8,
+        num_layers=2,
+        compile_model=False,
+        mesh_perturbation_std=0.0,
+        encoder=encoder,
+    )
+    assert model._prior_leaf_by_key == {}  # noqa: SLF001
+    assert model._prior_leaves == []  # noqa: SLF001
