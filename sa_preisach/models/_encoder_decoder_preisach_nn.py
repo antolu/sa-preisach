@@ -530,6 +530,8 @@ class EncoderDecoderPreisachNN(BaseModule):
         if density_prior is not None:
             self._inject_density_net(density_prior)
 
+        self._prior_leaf_by_key: dict[str, DensityPrior] = {}
+
         self.automatic_optimization = False
 
     def _inject_density_net(self, prior: DensityPrior) -> None:
@@ -699,11 +701,15 @@ class EncoderDecoderPreisachNN(BaseModule):
         # than the saturated boundary; weight is small so it doesn't fight the physics loss.
         saturation_reg = (initial_states**2).mean()
 
-        prior_losses: dict[str, torch.Tensor] = (
+        prior_losses_raw: dict[str, torch.Tensor] = (
             self.model.density_prior(mesh_coords, density)
             if self.model.density_prior is not None
             else {}
         )
+        prior_losses: dict[str, torch.Tensor] = {
+            k: v * self._prior_leaf_by_key[k].weight
+            for k, v in prior_losses_raw.items()
+        } if prior_losses_raw else {}
         prior_loss = (
             sum(prior_losses.values())  # type: ignore[arg-type]
             if prior_losses

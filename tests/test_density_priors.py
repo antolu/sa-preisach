@@ -55,3 +55,25 @@ def test_symmetry_forward_returns_unweighted_loss() -> None:
     out = prior(mesh, density)
     out2 = prior2(mesh, density)
     assert torch.isclose(out["symmetry"], out2["symmetry"], atol=1e-6)
+
+
+def test_composite_prior_forward_aggregates_unweighted() -> None:
+    from sa_preisach.priors import CompositeDensityPrior
+    p1 = DiagonalDensityPrior(weight=2.0)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        p2 = SymmetryDensityPrior(weight=3.0)
+
+    def mock_density_net(coords: torch.Tensor) -> torch.Tensor:
+        return torch.ones(coords.shape[0], coords.shape[1]) * 0.5
+
+    p2.density_net = mock_density_net
+    composite = CompositeDensityPrior(p1, p2)
+    mesh, density = _mesh_and_density()
+    out = composite(mesh, density)
+    assert "diagonal" in out
+    assert "symmetry" in out
+    p1_unit = DiagonalDensityPrior(weight=1.0)
+    out_unit = p1_unit(mesh, density)
+    assert torch.isclose(out["diagonal"], out_unit["diagonal"], atol=1e-6)
