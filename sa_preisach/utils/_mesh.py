@@ -85,10 +85,10 @@ class DiagonalMesh:
         >>> fn = DiagonalMesh(ls=0.03, background=0.8)
         >>> pts = create_triangle_mesh(0.1, mesh_density_function=fn)
 
-        Combine with SaturationCornerMesh for soft iron:
+        Combine with CentroidMesh for soft iron:
         >>> composite = CompositeMesh(
         ...     DiagonalMesh(ls=0.05),
-        ...     SaturationCornerMesh(ls=0.05),
+        ...     CentroidMesh(ls=0.05),
         ... )
         >>> pts = create_triangle_mesh(0.1, mesh_density_function=composite)
     """
@@ -105,12 +105,12 @@ class DiagonalMesh:
         return np.minimum(fine, mesh_scale * self.background)
 
 
-class SaturationCornerMesh:
-    """Exponentially fine mesh near a target point on the Preisach plane.
+class CentroidMesh:
+    """Exponentially fine mesh centred on an arbitrary point on the Preisach plane.
 
-    By default targets the saturation corner (alpha=1, beta=0), where hysterons
-    with very slow activation at high field reside. Elements shrink to `min_size`
-    at the target and grow toward `mesh_scale * background` far from it.
+    Elements shrink to `min_size` at (beta, alpha) and grow toward
+    `mesh_scale * background` far from it. Defaults to the saturation corner
+    (alpha=1, beta=0) but can be placed anywhere inside the unit triangle.
 
     Parameters
     ----------
@@ -119,39 +119,38 @@ class SaturationCornerMesh:
         target point. Smaller values concentrate refinement in a tighter region.
     background:
         Upper bound on element size as a fraction of `mesh_scale`.
-    alpha_target:
-        alpha coordinate (switch-up threshold) of the refinement target.
-    beta_target:
-        beta coordinate (switch-down threshold) of the refinement target.
+    alpha:
+        alpha coordinate (switch-up threshold) of the refinement centre.
+    beta:
+        beta coordinate (switch-down threshold) of the refinement centre.
     min_size:
         Absolute floor on element size. Prevents gmsh from receiving lc=0 at
         the target point itself.
 
     Example:
-        >>> fn = SaturationCornerMesh(ls=0.08, background=0.6)
+        >>> fn = CentroidMesh(ls=0.08, background=0.6)
         >>> pts = create_triangle_mesh(0.1, mesh_density_function=fn)
 
-        Target a different corner, e.g. negative saturation (alpha=0, beta=-1
-        in unnormalised coordinates — use 0,0 in the unit triangle):
-        >>> fn = SaturationCornerMesh(alpha_target=0.5, beta_target=0.0)
+        Place the centroid at mid-triangle:
+        >>> fn = CentroidMesh(alpha=0.7, beta=0.3)
     """
 
     def __init__(
         self,
         ls: float = 0.05,
         background: float = 1.0,
-        alpha_target: float = 1.0,
-        beta_target: float = 0.0,
+        alpha: float = 1.0,
+        beta: float = 0.0,
         min_size: float = 0.001,
     ) -> None:
         self.ls = ls
         self.background = background
-        self.alpha_target = alpha_target
-        self.beta_target = beta_target
+        self.alpha = alpha
+        self.beta = beta
         self.min_size = min_size
 
     def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
-        dist = np.sqrt((x - self.beta_target) ** 2 + (y - self.alpha_target) ** 2)
+        dist = np.sqrt((x - self.beta) ** 2 + (y - self.alpha) ** 2)
         fine = mesh_scale * (1.0 - np.exp(-dist / self.ls)) + self.min_size
         return np.minimum(fine, mesh_scale * self.background)
 
@@ -173,7 +172,7 @@ class CompositeMesh:
     Example:
         >>> composite = CompositeMesh(
         ...     DiagonalMesh(ls=0.05),
-        ...     SaturationCornerMesh(ls=0.05),
+        ...     CentroidMesh(ls=0.05),
         ... )
         >>> pts = create_triangle_mesh(0.1, mesh_density_function=composite)
     """

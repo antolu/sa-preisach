@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 
 from sa_preisach.utils import (
+    CentroidMesh,
     CompositeMesh,
     DefaultMesh,
     DiagonalMesh,
-    SaturationCornerMesh,
     constant_mesh_size,
     create_triangle_mesh,
     default_mesh_size,
@@ -115,27 +115,27 @@ def test_diagonal_mesh_standalone_covers_triangle() -> None:
 
 
 def test_saturation_corner_fine_at_target() -> None:
-    fn = SaturationCornerMesh(ls=0.05)
+    fn = CentroidMesh(ls=0.05)
     at_corner = fn(np.array([0.0]), np.array([1.0]), SCALE)
     far = fn(np.array([0.5]), np.array([0.5]), SCALE)
     assert at_corner < far
 
 
 def test_saturation_corner_background_is_upper_bound() -> None:
-    fn = SaturationCornerMesh(ls=0.05, background=0.5)
+    fn = CentroidMesh(ls=0.05, background=0.5)
     result = fn(X, Y, SCALE)
     assert np.all(result <= SCALE * 0.5 + 1e-9)
 
 
 def test_saturation_corner_standalone_covers_triangle() -> None:
-    fn = SaturationCornerMesh(ls=0.05, background=1.0)
+    fn = CentroidMesh(ls=0.05, background=1.0)
     far_from_corner = fn(np.array([0.5]), np.array([0.5]), SCALE)
     assert far_from_corner > 0
 
 
 def test_composite_diagonal_and_saturation() -> None:
     diag = DiagonalMesh(ls=0.05, background=1.0)
-    sat = SaturationCornerMesh(ls=0.05, background=1.0)
+    sat = CentroidMesh(ls=0.05, background=1.0)
     composite = CompositeMesh(diag, sat)
     # centre of triangle: neither near diagonal nor near saturation corner
     centre_b, centre_a = np.array([0.1]), np.array([0.6])
