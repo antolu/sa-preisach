@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 
 from sa_preisach.utils import (
-    CompositeMeshSizeFunction,
-    DefaultMeshSizeFunction,
-    DiagonalMeshSizeFunction,
-    SaturationCornerMeshSizeFunction,
+    CompositeMesh,
+    DefaultMesh,
+    DiagonalMesh,
+    SaturationCornerMesh,
     constant_mesh_size,
     create_triangle_mesh,
     default_mesh_size,
@@ -38,19 +38,19 @@ def test_exponential_mesh_bounded() -> None:
 
 
 def test_default_mesh_size_function_matches_functional() -> None:
-    fn = DefaultMeshSizeFunction()
+    fn = DefaultMesh()
     np.testing.assert_allclose(fn(X, Y, SCALE), default_mesh_size(X, Y, SCALE))
 
 
 def test_default_mesh_size_function_no_init_args() -> None:
-    instance = DefaultMeshSizeFunction()
+    instance = DefaultMesh()
     assert not hasattr(instance, "__dict__") or instance.__dict__ == {}
 
 
 def test_composite_returns_elementwise_min() -> None:
     fn1 = lambda x, y, s: np.full_like(x, 0.5)  # noqa: E731
     fn2 = lambda x, y, s: np.full_like(x, 0.3)  # noqa: E731
-    composite = CompositeMeshSizeFunction(fn1, fn2)
+    composite = CompositeMesh(fn1, fn2)
     result = composite(X, Y, SCALE)
     np.testing.assert_allclose(result, 0.3)
 
@@ -58,14 +58,14 @@ def test_composite_returns_elementwise_min() -> None:
 def test_composite_min_is_per_element() -> None:
     fn1 = lambda x, y, s: np.array([0.1, 0.8, 0.3])  # noqa: E731
     fn2 = lambda x, y, s: np.array([0.4, 0.2, 0.5])  # noqa: E731
-    composite = CompositeMeshSizeFunction(fn1, fn2)
+    composite = CompositeMesh(fn1, fn2)
     result = composite(X, Y, SCALE)
     np.testing.assert_allclose(result, [0.1, 0.2, 0.3])
 
 
 def test_composite_single_fn_passthrough() -> None:
-    fn = DefaultMeshSizeFunction()
-    composite = CompositeMeshSizeFunction(fn)
+    fn = DefaultMesh()
+    composite = CompositeMesh(fn)
     np.testing.assert_allclose(composite(X, Y, SCALE), fn(X, Y, SCALE))
 
 
@@ -73,7 +73,7 @@ def test_composite_three_fns() -> None:
     fn1 = lambda x, y, s: np.full_like(x, 0.9)  # noqa: E731
     fn2 = lambda x, y, s: np.full_like(x, 0.5)  # noqa: E731
     fn3 = lambda x, y, s: np.full_like(x, 0.2)  # noqa: E731
-    composite = CompositeMeshSizeFunction(fn1, fn2, fn3)
+    composite = CompositeMesh(fn1, fn2, fn3)
     np.testing.assert_allclose(composite(X, Y, SCALE), 0.2)
 
 
@@ -96,47 +96,47 @@ def test_create_triangle_mesh_points_in_unit_triangle() -> None:
 
 
 def test_diagonal_mesh_fine_at_diagonal() -> None:
-    fn = DiagonalMeshSizeFunction(ls=0.05)
+    fn = DiagonalMesh(ls=0.05)
     on_diag = fn(np.array([0.3]), np.array([0.3]), SCALE)
     off_diag = fn(np.array([0.0]), np.array([1.0]), SCALE)
     assert on_diag < off_diag
 
 
 def test_diagonal_mesh_background_is_upper_bound() -> None:
-    fn = DiagonalMeshSizeFunction(ls=0.05, background=0.5)
+    fn = DiagonalMesh(ls=0.05, background=0.5)
     result = fn(X, Y, SCALE)
     assert np.all(result <= SCALE * 0.5 + 1e-9)
 
 
 def test_diagonal_mesh_standalone_covers_triangle() -> None:
-    fn = DiagonalMeshSizeFunction(ls=0.05, background=1.0)
+    fn = DiagonalMesh(ls=0.05, background=1.0)
     far_from_diag = fn(np.array([0.0]), np.array([1.0]), SCALE)
     assert far_from_diag > 0
 
 
 def test_saturation_corner_fine_at_target() -> None:
-    fn = SaturationCornerMeshSizeFunction(ls=0.05)
+    fn = SaturationCornerMesh(ls=0.05)
     at_corner = fn(np.array([0.0]), np.array([1.0]), SCALE)
     far = fn(np.array([0.5]), np.array([0.5]), SCALE)
     assert at_corner < far
 
 
 def test_saturation_corner_background_is_upper_bound() -> None:
-    fn = SaturationCornerMeshSizeFunction(ls=0.05, background=0.5)
+    fn = SaturationCornerMesh(ls=0.05, background=0.5)
     result = fn(X, Y, SCALE)
     assert np.all(result <= SCALE * 0.5 + 1e-9)
 
 
 def test_saturation_corner_standalone_covers_triangle() -> None:
-    fn = SaturationCornerMeshSizeFunction(ls=0.05, background=1.0)
+    fn = SaturationCornerMesh(ls=0.05, background=1.0)
     far_from_corner = fn(np.array([0.5]), np.array([0.5]), SCALE)
     assert far_from_corner > 0
 
 
 def test_composite_diagonal_and_saturation() -> None:
-    diag = DiagonalMeshSizeFunction(ls=0.05, background=1.0)
-    sat = SaturationCornerMeshSizeFunction(ls=0.05, background=1.0)
-    composite = CompositeMeshSizeFunction(diag, sat)
+    diag = DiagonalMesh(ls=0.05, background=1.0)
+    sat = SaturationCornerMesh(ls=0.05, background=1.0)
+    composite = CompositeMesh(diag, sat)
     # centre of triangle: neither near diagonal nor near saturation corner
     centre_b, centre_a = np.array([0.1]), np.array([0.6])
     # near saturation corner (beta~0, alpha~1)
@@ -147,6 +147,6 @@ def test_composite_diagonal_and_saturation() -> None:
 
 
 def test_create_triangle_mesh_with_composite_density() -> None:
-    fn = CompositeMeshSizeFunction(DefaultMeshSizeFunction(), constant_mesh_size)
+    fn = CompositeMesh(DefaultMesh(), constant_mesh_size)
     pts = create_triangle_mesh(0.15, mesh_density_function=fn)
     assert pts.shape[1] == _N_COORDS

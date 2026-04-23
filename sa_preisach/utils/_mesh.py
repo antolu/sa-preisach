@@ -46,12 +46,53 @@ def make_mesh_size_function(
     return _DENSITY_FUNCTIONS[mesh_function]
 
 
-class DefaultMeshSizeFunction:
+class DefaultMesh:
+    """Linear mesh size that grows with distance from the diagonal.
+
+    Size = mesh_scale * (0.2 * |alpha - beta| + 0.05), giving finer elements
+    near the diagonal and coarser away from it.
+
+    Example:
+        >>> fn = DefaultMesh()
+        >>> pts = create_triangle_mesh(0.1, mesh_density_function=fn)
+    """
+
     def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
         return mesh_scale * (0.2 * np.abs(x - y) + 0.05)
 
 
-class DiagonalMeshSizeFunction:
+class DiagonalMesh:
+    """Exponentially fine mesh along the alpha=beta diagonal of the Preisach plane.
+
+    Elements shrink to `min_size` on the diagonal and grow toward
+    `mesh_scale * background` away from it. Useful for soft-iron where most
+    hysterons switch near zero field (alpha ≈ beta ≈ 0).
+
+    Parameters
+    ----------
+    ls:
+        Length scale controlling how quickly element size grows away from the
+        diagonal. Smaller values concentrate refinement in a narrower band.
+    background:
+        Upper bound on element size as a fraction of `mesh_scale`. Set to 1.0
+        to allow full coarsening far from the diagonal; lower values keep the
+        rest of the triangle finer.
+    min_size:
+        Absolute floor on element size. Prevents gmsh from receiving lc=0 on
+        the diagonal itself.
+
+    Example:
+        >>> fn = DiagonalMesh(ls=0.03, background=0.8)
+        >>> pts = create_triangle_mesh(0.1, mesh_density_function=fn)
+
+        Combine with SaturationCornerMesh for soft iron:
+        >>> composite = CompositeMesh(
+        ...     DiagonalMesh(ls=0.05),
+        ...     SaturationCornerMesh(ls=0.05),
+        ... )
+        >>> pts = create_triangle_mesh(0.1, mesh_density_function=composite)
+    """
+
     def __init__(
         self, ls: float = 0.05, background: float = 1.0, min_size: float = 0.001
     ) -> None:
@@ -64,7 +105,37 @@ class DiagonalMeshSizeFunction:
         return np.minimum(fine, mesh_scale * self.background)
 
 
-class SaturationCornerMeshSizeFunction:
+class SaturationCornerMesh:
+    """Exponentially fine mesh near a target point on the Preisach plane.
+
+    By default targets the saturation corner (alpha=1, beta=0), where hysterons
+    with very slow activation at high field reside. Elements shrink to `min_size`
+    at the target and grow toward `mesh_scale * background` far from it.
+
+    Parameters
+    ----------
+    ls:
+        Length scale controlling how quickly element size grows away from the
+        target point. Smaller values concentrate refinement in a tighter region.
+    background:
+        Upper bound on element size as a fraction of `mesh_scale`.
+    alpha_target:
+        alpha coordinate (switch-up threshold) of the refinement target.
+    beta_target:
+        beta coordinate (switch-down threshold) of the refinement target.
+    min_size:
+        Absolute floor on element size. Prevents gmsh from receiving lc=0 at
+        the target point itself.
+
+    Example:
+        >>> fn = SaturationCornerMesh(ls=0.08, background=0.6)
+        >>> pts = create_triangle_mesh(0.1, mesh_density_function=fn)
+
+        Target a different corner, e.g. negative saturation (alpha=0, beta=-1
+        in unnormalised coordinates — use 0,0 in the unit triangle):
+        >>> fn = SaturationCornerMesh(alpha_target=0.5, beta_target=0.0)
+    """
+
     def __init__(
         self,
         ls: float = 0.05,
@@ -85,7 +156,28 @@ class SaturationCornerMeshSizeFunction:
         return np.minimum(fine, mesh_scale * self.background)
 
 
-class CompositeMeshSizeFunction:
+class CompositeMesh:
+    """Combine multiple mesh size functions by taking the elementwise minimum.
+
+    Since gmsh treats the size callback as an upper bound, taking the minimum
+    gives the finest resolution requested by any of the component functions at
+    each point. Each function is usable standalone (via its `background`
+    parameter) and the composite simply tightens wherever any single function
+    demands refinement.
+
+    Parameters
+    ----------
+    *fns:
+        Any number of callables with signature (x, y, mesh_scale) -> ndarray.
+
+    Example:
+        >>> composite = CompositeMesh(
+        ...     DiagonalMesh(ls=0.05),
+        ...     SaturationCornerMesh(ls=0.05),
+        ... )
+        >>> pts = create_triangle_mesh(0.1, mesh_density_function=composite)
+    """
+
     def __init__(
         self, *fns: typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray]
     ) -> None:

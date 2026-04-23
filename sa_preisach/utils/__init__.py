@@ -2,10 +2,10 @@ from .._mod_replace import replace_modname
 from ._batched_states import get_batched_states, initialize_batched_state
 from ._grad import set_requires_grad
 from ._mesh import (
-    CompositeMeshSizeFunction,
-    DefaultMeshSizeFunction,
-    DiagonalMeshSizeFunction,
-    SaturationCornerMeshSizeFunction,
+    CompositeMesh,
+    DefaultMesh,
+    DiagonalMesh,
+    SaturationCornerMesh,
     constant_mesh_size,
     create_triangle_mesh,
     default_mesh_size,
@@ -16,10 +16,10 @@ from ._states import get_states, initialize_state, sweep_left, sweep_up, switch
 
 for _mod in (
     default_mesh_size,
-    DefaultMeshSizeFunction,
-    CompositeMeshSizeFunction,
-    DiagonalMeshSizeFunction,
-    SaturationCornerMeshSizeFunction,
+    DefaultMesh,
+    CompositeMesh,
+    DiagonalMesh,
+    SaturationCornerMesh,
     constant_mesh_size,
     exponential_mesh,
     create_triangle_mesh,
@@ -41,10 +41,10 @@ del replace_modname
 
 
 __all__ = [
-    "CompositeMeshSizeFunction",
-    "DefaultMeshSizeFunction",
-    "DiagonalMeshSizeFunction",
-    "SaturationCornerMeshSizeFunction",
+    "CompositeMesh",
+    "DefaultMesh",
+    "DiagonalMesh",
+    "SaturationCornerMesh",
     "constant_mesh_size",
     "create_triangle_mesh",
     "default_mesh_size",
