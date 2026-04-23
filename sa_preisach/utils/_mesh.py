@@ -47,12 +47,47 @@ def make_mesh_size_function(
 
 
 class DefaultMeshSizeFunction:
-    def __init__(self, scale: float = 0.2, offset: float = 0.05):
-        self.scale = scale
-        self.offset = offset
+    def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
+        return mesh_scale * (0.2 * np.abs(x - y) + 0.05)
+
+
+class DiagonalMeshSizeFunction:
+    def __init__(self, ls: float = 0.05, background: float = 1.0) -> None:
+        self.ls = ls
+        self.background = background
 
     def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
-        return mesh_scale * (self.scale * np.abs(x - y) + self.offset)
+        fine = mesh_scale * (1.0 - np.exp(-np.abs(x - y) / self.ls))
+        return np.minimum(fine, mesh_scale * self.background)
+
+
+class SaturationCornerMeshSizeFunction:
+    def __init__(
+        self,
+        ls: float = 0.05,
+        background: float = 1.0,
+        alpha_target: float = 1.0,
+        beta_target: float = 0.0,
+    ) -> None:
+        self.ls = ls
+        self.background = background
+        self.alpha_target = alpha_target
+        self.beta_target = beta_target
+
+    def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
+        dist = np.sqrt((x - self.beta_target) ** 2 + (y - self.alpha_target) ** 2)
+        fine = mesh_scale * (1.0 - np.exp(-dist / self.ls))
+        return np.minimum(fine, mesh_scale * self.background)
+
+
+class CompositeMeshSizeFunction:
+    def __init__(
+        self, *fns: typing.Callable[[np.ndarray, np.ndarray, float], np.ndarray]
+    ) -> None:
+        self.fns = fns
+
+    def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
+        return np.minimum.reduce([fn(x, y, mesh_scale) for fn in self.fns])
 
 
 def create_triangle_mesh(
