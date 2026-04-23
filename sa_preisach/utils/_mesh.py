@@ -52,12 +52,15 @@ class DefaultMeshSizeFunction:
 
 
 class DiagonalMeshSizeFunction:
-    def __init__(self, ls: float = 0.05, background: float = 1.0) -> None:
+    def __init__(
+        self, ls: float = 0.05, background: float = 1.0, min_size: float = 0.001
+    ) -> None:
         self.ls = ls
         self.background = background
+        self.min_size = min_size
 
     def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
-        fine = mesh_scale * (1.0 - np.exp(-np.abs(x - y) / self.ls))
+        fine = mesh_scale * (1.0 - np.exp(-np.abs(x - y) / self.ls)) + self.min_size
         return np.minimum(fine, mesh_scale * self.background)
 
 
@@ -68,15 +71,17 @@ class SaturationCornerMeshSizeFunction:
         background: float = 1.0,
         alpha_target: float = 1.0,
         beta_target: float = 0.0,
+        min_size: float = 0.001,
     ) -> None:
         self.ls = ls
         self.background = background
         self.alpha_target = alpha_target
         self.beta_target = beta_target
+        self.min_size = min_size
 
     def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
         dist = np.sqrt((x - self.beta_target) ** 2 + (y - self.alpha_target) ** 2)
-        fine = mesh_scale * (1.0 - np.exp(-dist / self.ls))
+        fine = mesh_scale * (1.0 - np.exp(-dist / self.ls)) + self.min_size
         return np.minimum(fine, mesh_scale * self.background)
 
 
