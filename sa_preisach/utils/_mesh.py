@@ -105,6 +105,67 @@ class DiagonalMesh:
         return np.minimum(fine, mesh_scale * self.background)
 
 
+class LineMesh:
+    """Exponentially fine mesh along a horizontal or vertical line on the Preisach plane.
+
+    Elements shrink to `min_size` on the line and grow toward
+    `mesh_scale * background` away from it. Useful for refining along
+    boundaries such as alpha=0 (no positive switching) or beta=0 (no negative
+    switching).
+
+    Parameters
+    ----------
+    axis:
+        Which coordinate to measure distance from. ``"alpha"`` refines along a
+        horizontal line at ``value``; ``"beta"`` refines along a vertical line.
+    value:
+        Position of the line along the chosen axis (default 0.0).
+    ls:
+        Length scale controlling how quickly element size grows away from the
+        line. Smaller values concentrate refinement in a narrower band.
+    background:
+        Upper bound on element size as a fraction of `mesh_scale`.
+    min_size:
+        Absolute floor on element size. Prevents gmsh from receiving lc=0 on
+        the line itself.
+
+    Example:
+        Refine along beta=0 (vertical boundary):
+        >>> fn = LineMesh(axis="beta", value=0.0, ls=0.05)
+        >>> pts = create_triangle_mesh(0.1, mesh_density_function=fn)
+
+        Combine with DiagonalMesh:
+        >>> composite = CompositeMesh(
+        ...     DiagonalMesh(ls=0.05),
+        ...     LineMesh(axis="alpha", value=0.0, ls=0.05),
+        ... )
+        >>> pts = create_triangle_mesh(0.1, mesh_density_function=composite)
+    """
+
+    def __init__(
+        self,
+        axis: typing.Literal["alpha", "beta"] = "beta",
+        value: float = 0.0,
+        ls: float = 0.05,
+        background: float = 1.0,
+        min_size: float = 0.001,
+    ) -> None:
+        if axis not in ("alpha", "beta"):
+            msg = f"axis must be 'alpha' or 'beta', got '{axis}'"
+            raise ValueError(msg)
+        self.axis = axis
+        self.value = value
+        self.ls = ls
+        self.background = background
+        self.min_size = min_size
+
+    def __call__(self, x: np.ndarray, y: np.ndarray, mesh_scale: float) -> np.ndarray:
+        coord = y if self.axis == "alpha" else x
+        dist = np.abs(coord - self.value)
+        fine = mesh_scale * (1.0 - np.exp(-dist / self.ls)) + self.min_size
+        return np.minimum(fine, mesh_scale * self.background)
+
+
 class CentroidMesh:
     """Exponentially fine mesh centred on an arbitrary point on the Preisach plane.
 

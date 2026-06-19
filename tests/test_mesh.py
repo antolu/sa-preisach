@@ -8,6 +8,7 @@ from sa_preisach.utils import (
     CompositeMesh,
     DefaultMesh,
     DiagonalMesh,
+    LineMesh,
     constant_mesh_size,
     create_triangle_mesh,
     default_mesh_size,
@@ -144,6 +145,38 @@ def test_composite_diagonal_and_saturation() -> None:
     result_centre = composite(centre_b, centre_a, SCALE)
     result_corner = composite(corner_b, corner_a, SCALE)
     assert result_corner < result_centre
+
+
+def test_line_mesh_beta_fine_at_value() -> None:
+    fn = LineMesh(axis="beta", value=0.0, ls=0.05)
+    on_line = fn(np.array([0.0]), np.array([0.5]), SCALE)
+    off_line = fn(np.array([0.8]), np.array([0.9]), SCALE)
+    assert on_line < off_line
+
+
+def test_line_mesh_alpha_fine_at_value() -> None:
+    fn = LineMesh(axis="alpha", value=0.0, ls=0.05)
+    on_line = fn(np.array([0.0]), np.array([0.0]), SCALE)
+    off_line = fn(np.array([0.0]), np.array([0.9]), SCALE)
+    assert on_line < off_line
+
+
+def test_line_mesh_background_is_upper_bound() -> None:
+    fn = LineMesh(axis="beta", value=0.0, ls=0.05, background=0.5)
+    result = fn(X, Y, SCALE)
+    assert np.all(result <= SCALE * 0.5 + 1e-9)
+
+
+def test_line_mesh_min_size_floor() -> None:
+    min_size = 0.001
+    fn = LineMesh(axis="beta", value=0.0, ls=0.05, min_size=min_size)
+    result = fn(np.array([0.0]), np.array([0.5]), SCALE)
+    assert np.all(result >= min_size)
+
+
+def test_line_mesh_invalid_axis_raises() -> None:
+    with pytest.raises(ValueError, match="axis"):
+        LineMesh(axis="gamma")  # type: ignore[arg-type]
 
 
 def test_create_triangle_mesh_with_composite_density() -> None:
