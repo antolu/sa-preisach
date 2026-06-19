@@ -558,6 +558,7 @@ class EncoderDecoderPreisachNN(BaseModule):
         self.model.density_prior = density_prior
         self._prior_leaves: list[DensityPrior] = []
         self._prior_leaf_by_key: dict[str, DensityPrior] = {}
+        self._prior_key_counts: dict[str, int] = {}
         if density_prior is not None:
             self._collect_prior_leaves(density_prior)
 
@@ -591,7 +592,16 @@ class EncoderDecoderPreisachNN(BaseModule):
             if was_training:
                 self.model.train()
             for k in sample:
-                self._prior_leaf_by_key[k] = prior
+                if k in self._prior_leaf_by_key:
+                    count = self._prior_key_counts.get(k, 1)
+                    if count == 1:
+                        existing = self._prior_leaf_by_key.pop(k)
+                        self._prior_leaf_by_key[f"{k}_0"] = existing
+                    self._prior_leaf_by_key[f"{k}_{count}"] = prior
+                    self._prior_key_counts[k] = count + 1
+                else:
+                    self._prior_leaf_by_key[k] = prior
+                    self._prior_key_counts[k] = 1
             self._prior_leaves.append(prior)
 
     def on_fit_start(self) -> None:
