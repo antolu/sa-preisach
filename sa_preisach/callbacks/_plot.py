@@ -15,6 +15,7 @@ from ..models import (
     DifferentiablePreisach,
     DifferentiablePreisachNN,
     EncoderDecoderPreisachNN,
+    PreisachNN,
     SelfAdaptivePreisach,
 )
 from ..utils import get_states
@@ -57,7 +58,8 @@ class PlotHysteresisCallback(lightning.pytorch.callbacks.Callback):
         pl_module: SelfAdaptivePreisach
         | DifferentiablePreisach
         | DifferentiablePreisachNN
-        | EncoderDecoderPreisachNN,
+        | EncoderDecoderPreisachNN
+        | PreisachNN,
     ) -> None:
         if not trainer.is_global_zero:
             return super().on_validation_epoch_end(trainer, pl_module)
@@ -130,7 +132,8 @@ class PlotHysteresisCallback(lightning.pytorch.callbacks.Callback):
         pl_module: SelfAdaptivePreisach
         | DifferentiablePreisach
         | DifferentiablePreisachNN
-        | EncoderDecoderPreisachNN,
+        | EncoderDecoderPreisachNN
+        | PreisachNN,
         dataset: TimeSeriesDataset | EncoderDecoderDataset,
         outputs: list[dict[str, torch.Tensor]],
     ) -> dict[str, torch.Tensor]:
@@ -233,7 +236,8 @@ class PlotHysteresisCallback(lightning.pytorch.callbacks.Callback):
         pl_module: SelfAdaptivePreisach
         | DifferentiablePreisach
         | DifferentiablePreisachNN
-        | EncoderDecoderPreisachNN,
+        | EncoderDecoderPreisachNN
+        | PreisachNN,
         dataset: TimeSeriesDataset | EncoderDecoderDataset,
         output: dict[str, torch.Tensor],
         hysteresis_output: dict[str, torch.Tensor] | None = None,
@@ -269,7 +273,7 @@ class PlotHysteresisCallback(lightning.pytorch.callbacks.Callback):
         elif isinstance(pl_module, DifferentiablePreisach | DifferentiablePreisachNN):
             alpha = pl_module.model.mesh[:, 1]
             beta = pl_module.model.mesh[:, 0]
-        elif isinstance(pl_module, EncoderDecoderPreisachNN):
+        elif isinstance(pl_module, EncoderDecoderPreisachNN | PreisachNN):
             alpha = pl_module.model.base_mesh[:, 1]
             beta = pl_module.model.base_mesh[:, 0]
         else:
@@ -284,7 +288,7 @@ class PlotHysteresisCallback(lightning.pytorch.callbacks.Callback):
         self._log_figure(trainer, fig_density, tag=f"{tag_prefix}/hysteron_density")
         plt.close(fig_density)
 
-        if isinstance(pl_module, EncoderDecoderPreisachNN):
+        if isinstance(pl_module, EncoderDecoderPreisachNN | PreisachNN):
             n_samples = min(self.num_samples, output["initial_states"].shape[0])
             for i in range(n_samples):
                 initial_states = output["initial_states"][i].detach().cpu()
@@ -315,7 +319,8 @@ class PlotHysteresisCallback(lightning.pytorch.callbacks.Callback):
         pl_module: SelfAdaptivePreisach
         | DifferentiablePreisach
         | DifferentiablePreisachNN
-        | EncoderDecoderPreisachNN,
+        | EncoderDecoderPreisachNN
+        | PreisachNN,
         outputs: dict[str, torch.Tensor],
         batch: typing.Any,
         batch_idx: int,
@@ -362,7 +367,7 @@ class PlotHysteresisCallback(lightning.pytorch.callbacks.Callback):
         self._log_figure(trainer, fig_hysteresis, tag="train/hysteresis")
         plt.close(fig_hysteresis)
 
-        if isinstance(pl_module, EncoderDecoderPreisachNN):
+        if isinstance(pl_module, EncoderDecoderPreisachNN | PreisachNN):
             n_samples = min(self.num_samples, out["initial_states"].shape[0])
             for i in range(n_samples):
                 initial_states = out["initial_states"][i].detach().cpu()

@@ -1,0 +1,65 @@
+seed_everything: null
+trainer:
+  accelerator: cpu
+  max_epochs: 100
+  min_epochs: 5
+  val_check_interval: 1.0
+  log_every_n_steps: 1
+  devices: 1
+  gradient_clip_val: null
+  enable_checkpointing: false
+  enable_progress_bar: true
+  callbacks:
+    - class_path: sa_preisach.callbacks.PlotHysteresisCallback
+      init_args:
+        plot_training: true
+        train_plot_interval: 100
+
+data:
+  class_path: sa_preisach.data.CycledPreisachDataModule
+  init_args:
+    known_covariate: I_meas_A_filtered
+    target_covariate: B_meas_T_filtered_eddy_corrected
+    train_df_paths:
+      - ~/cernbox/hysteresis/dipole/datasets/v10/cycles/cycle_001.parquet
+      - ~/cernbox/hysteresis/dipole/datasets/v10/cycles/cycle_002.parquet
+    val_df_paths:
+      - ~/cernbox/hysteresis/dipole/datasets/v10/cycles/cycle_val_001.parquet
+    batch_size: 4
+    val_batch_size: 4
+    shuffle: true
+    downsample: 1
+    extra_transforms:
+      B_meas_T_filtered_eddy_corrected:
+        - class_path: transformertf.data.transform.DiscreteFunctionTransform
+          init_args:
+            xs_: sample/calibration_fn.csv
+        - class_path: transformertf.data.transform.MinMaxScaler
+          init_args:
+            min_: 0
+            max_: 1
+      I_meas_A_filtered:
+        - class_path: transformertf.data.transform.MinMaxScaler
+          init_args:
+            min_: 0
+            max_: 1
+
+model:
+  class_path: sa_preisach.models.PreisachNN
+  init_args:
+    mesh_scale: 0.05
+    mesh_perturbation_std: 0.01
+    hidden_dim: 32
+    num_layers: 3
+    temp: 1e-3
+    lr: 1e-4
+    lr_scale: 1e-2
+    lr_step_interval: 50
+    lr_gamma: 0.9
+    gradient_clip_val: 1.0
+    m_scale_bounds: [0.0, 10.0]
+    offset_bounds: [-10.0, 10.0]
+    normalized_density: true
+    compile_model: false
+    initial_field: 0.0  # H_norm at t=-1; 0.0 = fully deactivated start
+    fit_scale_offset: false

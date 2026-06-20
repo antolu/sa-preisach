@@ -7,6 +7,7 @@ from ._encoder_decoder_preisach_nn import (
     EncoderDecoderPreisachNN,
     EncoderDecoderPreisachNNModel,
 )
+from ._preisach_nn import PreisachNN, PreisachNNModel
 from ._sa_preisach import SelfAdaptivePreisach, SelfAdaptivePreisachModel
 
 for _mod in (
@@ -18,6 +19,8 @@ for _mod in (
     DifferentiablePreisachNNModel,
     EncoderDecoderPreisachNN,
     EncoderDecoderPreisachNNModel,
+    PreisachNN,
+    PreisachNNModel,
     SelfAdaptivePreisach,
     SelfAdaptivePreisachModel,
 ):
@@ -36,6 +39,8 @@ __all__ = [
     "DifferentiablePreisachNNModel",
     "EncoderDecoderPreisachNN",
     "EncoderDecoderPreisachNNModel",
+    "PreisachNN",
+    "PreisachNNModel",
     "SelfAdaptivePreisach",
     "SelfAdaptivePreisachModel",
 ]
